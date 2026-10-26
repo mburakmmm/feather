@@ -67,6 +67,7 @@ class Session:
     pool_id: int
     lease_id: int
     is_released: bool
+    in_transaction: bool
 
     def __init__(self, conn: FeatherConn, dialect: Dialect, owns_conn: bool = True, pool_id: int = 0, lease_id: int = 0) -> None:
         self.conn = conn
@@ -76,6 +77,7 @@ class Session:
         self.pool_id = pool_id
         self.lease_id = lease_id
         self.is_released = False
+        self.in_transaction = False
 
     def _ensure_open(self) -> None:
 

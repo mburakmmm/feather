@@ -4,7 +4,7 @@
 
 [![Nox Version](https://img.shields.io/badge/noxc-2.0.27-blue.svg)](https://noxlang.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-22%2F22%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-25%2F25%20passed-brightgreen.svg)]()
 
 Feather makes everyday database work in the [Nox programming language](https://github.com/mburakmmm/nox-lang) intuitive, predictable, and safe. Think **Peewee / SQLModel in spirit**: explicit typed model mapping, parameterized CRUD, query construction, transaction management, connection pooling, and schema migrations — built directly on Nox's standard library with zero external dependencies.
 
@@ -22,9 +22,9 @@ Feather makes everyday database work in the [Nox programming language](https://g
 - 🔑 **Composite Primary Keys:** Full multi-column PK support with table-level constraint DDL, `find_by_pk`, `update_by_pk`, and `delete_by_pk` (with composite auto-increment safety).
 - 🔄 **Multi-Dialect Support:** Portable queries across **SQLite**, **PostgreSQL** (`$1..$N` placeholders, `RETURNING`), and **MySQL** (backtick identifier quoting, `INT AUTO_INCREMENT PRIMARY KEY` migration DDL).
 - 💼 **Transaction Unit of Work:** Explicit state-tracked transactions (`IDLE`, `ACTIVE`, `COMMITTED`, `ROLLED_BACK`, `FAILED`) with automatic rollback on error.
-- 🏊 **Leased Connection Pooling:** Bounded connection pool (`ConnectionPool`) with monotonic lease tracking, double-release prevention, foreign pool protection, and capacity invariant enforcement (`total = active + idle <= max`).
-- 📦 **Schema Migrations with Cryptographic SHA-256 Verification:** Versioned migrations with standard `nox.crypto.sha256` tamper protection covering version, name, up, and down SQLs, plus dialect-aware DDL.
-- 🔗 **Relationship Loaders & Batched Eager Loading:** Explicit `has_one`, `has_many`, `belongs_to`, and `many_to_many` loaders with `load_has_many_batch` and `load_belongs_to_batch` eliminating N+1 queries.
+- 🏊 **Leased Connection Pooling:** Bounded connection pool (`ConnectionPool`) with monotonic lease tracking, poison connection isolation, health check pings, graceful vs force shutdown (`close_graceful()`, `close_force()`), and capacity invariant enforcement (`total = active + idle <= max`).
+- 📦 **Schema Migrations with Cryptographic SHA-256 Verification:** Versioned migrations with standard `nox.crypto.sha256` tamper protection covering version, name, up, and down SQLs, dialect-aware DDL, and seamless automatic upgrade compatibility for legacy v0.2.0 checksums.
+- 🔗 **Relationship Loaders & Batched Eager Loading:** Explicit `has_one`, `has_many`, `belongs_to`, and `many_to_many` loaders with `load_has_many_batch`, `load_belongs_to_batch`, and `load_has_many_grouped` (`dict[parent_pk, list[Child]]`) with parameter chunking eliminating N+1 queries.
 - 🖥️ **CLI Migration & Verification Tool:** Run `feather demo`, `feather migrate status`, `feather migrate up`, and `feather migrate down`.
 - ⚡ **Zero External Dependencies:** Built 100% on Nox standard library modules (`nox.db`, `nox.sqlite`, `nox.postgres`, `nox.mysql`, `nox.strings`, `nox.crypto`, `nox.test`, `nox.os`).
 

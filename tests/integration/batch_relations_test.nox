@@ -102,5 +102,24 @@ empty_fks: list[Value] = []
 empty_authors: list[Author] = loader.load_belongs_to_batch[Author](model_author, "id", empty_fks)
 nox.test.assert_eq_int(len(empty_authors), 0, "Empty FKs returns empty list without error")
 
+# 9. Test load_has_many_grouped: returns dict[parent_pk, list[Child]]
+def get_book_author(b: Book) -> int:
+    return b.author_id
+
+all_author_pks: list[Value] = [val_int(1), val_int(2), val_int(3)]
+grouped_books: dict[int, list[Book]] = loader.load_has_many_grouped[Book](model_book, "author_id", all_author_pks, get_book_author)
+
+nox.test.assert_eq_int(len(grouped_books[1]), 2, "Author 1 has 2 books in grouped map")
+nox.test.assert_eq_int(len(grouped_books[2]), 1, "Author 2 has 1 book in grouped map")
+nox.test.assert_eq_int(len(grouped_books[3]), 0, "Author 3 has 0 books in grouped map")
+nox.test.assert_eq_str(grouped_books[1][0].title, "Alice in Wonderland", "First book title matches")
+nox.test.assert_eq_str(grouped_books[2][0].title, "Bob's Odyssey", "Second author book title matches")
+
+# 10. Test load_relation_has_many_grouped relation helper
+rel_grouped: dict[int, list[Book]] = loader.load_relation_has_many_grouped[Book](rel_books, model_book, all_author_pks, get_book_author)
+nox.test.assert_eq_int(len(rel_grouped[1]), 2, "Author 1 has 2 books in relation grouped map")
+nox.test.assert_eq_int(len(rel_grouped[2]), 1, "Author 2 has 1 book in relation grouped map")
+nox.test.assert_eq_int(len(rel_grouped[3]), 0, "Author 3 has 0 books in relation grouped map")
+
 s.close()
 print("batch_relations_test passed")

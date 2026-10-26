@@ -1,0 +1,49 @@
+# tests/integration/pool_shutdown_test.nox — Integration tests for graceful and force pool shutdown modes.
+
+import nox.test
+import feather
+from feather import ConnectionPool, create_sqlite_pool, Session, Table, Column, col_int, col_str, table, val_int, val_str
+import errors
+from errors import PoolError
+
+test_tbl: Table = table("shutdown_items", [col_int("id", True), col_str("name")])
+
+# 1. Graceful Shutdown Test
+cp: ConnectionPool = create_sqlite_pool(":memory:", 3)
+s1: Session = cp.acquire()
+s1.create_table(test_tbl)
+s1.insert(test_tbl, {"id": val_int(1), "name": val_str("in_flight_1")})
+
+# Trigger graceful shutdown (close_all(False) or close_graceful())
+cp.close_graceful()
+nox.test.assert_true(cp.is_closed, "Pool is marked closed")
+
+# New acquire attempts MUST be rejected immediately
+acquire_rejected: bool = False
+try:
+    s_new: Session = cp.acquire()
+except PoolError as e:
+    acquire_rejected = True
+nox.test.assert_true(acquire_rejected, "New acquire is rejected after graceful shutdown")
+
+# In-flight session s1 can STILL complete its queries without being forcibly aborted
+s1.insert(test_tbl, {"id": val_int(2), "name": val_str("in_flight_2")})
+c_val: int = s1.count(test_tbl)
+nox.test.assert_eq_int(c_val, 2, "In-flight queries succeed during graceful shutdown")
+
+# Releasing s1 closes the underlying connection cleanly
+cp.release_connection(s1)
+nox.test.assert_eq_int(cp.in_use_count(), 0, "No remaining active leases")
+nox.test.assert_eq_int(cp.idle_count(), 0, "No connections kept in idle pool")
+
+# 2. Force Shutdown Test
+cp_force: ConnectionPool = create_sqlite_pool(":memory:", 3)
+s2: Session = cp_force.acquire()
+s2.create_table(test_tbl)
+
+# Force shutdown aggressively terminates active leases
+cp_force.close_force()
+nox.test.assert_true(cp_force.is_closed, "Force closed pool is marked closed")
+nox.test.assert_eq_int(cp_force.in_use_count(), 0, "Active leases cleared in force shutdown")
+
+print("pool_shutdown_test passed")

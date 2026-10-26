@@ -26,6 +26,44 @@ def compute_migration_checksum(m: Migration) -> str:
         j = j + 1
     return nox.crypto.sha256(combined)
 
+def _int_to_hex(n: int) -> str:
+    if n == 0:
+        return "00000000"
+    val: int = n
+    if val < 0:
+        val = -val
+    chars: list[str] = []
+    hex_digits: str = "0123456789abcdef"
+    while val > 0:
+        rem: int = val % 16
+        chars.append(hex_digits[rem])
+        val = val // 16
+    while len(chars) < 8:
+        chars.append("0")
+    res: str = ""
+    idx: int = len(chars) - 1
+    while idx >= 0:
+        res = res + chars[idx]
+        idx = idx - 1
+    return res
+
+def compute_legacy_string_checksum(s: str) -> str:
+    h: int = 5381
+    i: int = 0
+    while i < len(s):
+        c: int = ord(s[i])
+        h = ((h * 33) + c) % 2147483647
+        i = i + 1
+    return _int_to_hex(h)
+
+def compute_legacy_migration_checksum(m: Migration) -> str:
+    combined: str = m.name + ":"
+    i: int = 0
+    while i < len(m.up_sqls):
+        combined = combined + m.up_sqls[i] + ";"
+        i = i + 1
+    return compute_legacy_string_checksum(combined)
+
 class Migration:
     version: int
     name: str
@@ -80,7 +118,18 @@ class MigrationManager:
                 if m.version == v:
                     curr_sum: str = m.get_checksum()
                     if rec_sum != "" and rec_sum != curr_sum:
-                        raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded checksum " + rec_sum + ", but code checksum is " + curr_sum)
+                        # Check for backwards compatibility with v0.2.0 (8-character DJB2 checksum)
+                        if len(rec_sum) == 8:
+                            legacy_sum: str = compute_legacy_migration_checksum(m)
+                            if rec_sum == legacy_sum:
+                                # Upgrade legacy checksum to modern SHA-256 automatically
+                                update_sql: str = "UPDATE " + q_table + " SET " + q_check + " = " + self.session.dialect.placeholder(0) + " WHERE " + q_ver + " = " + self.session.dialect.placeholder(1)
+                                up_params: list[Value] = [val_str(curr_sum), val_int(m.version)]
+                                self.session.execute_raw(update_sql, up_params)
+                            else:
+                                raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded legacy checksum " + rec_sum + ", but code legacy checksum is " + legacy_sum)
+                        else:
+                            raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded checksum " + rec_sum + ", but code checksum is " + curr_sum)
                 m_idx = m_idx + 1
             r_idx = r_idx + 1
 

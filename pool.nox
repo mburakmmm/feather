@@ -7,6 +7,7 @@ from session import Session, FeatherConn, wrap_db_connection
 import errors
 from errors import PoolError
 import nox.sqlite
+import nox.strings
 
 class _PoolIdGenerator:
     current: int
@@ -57,23 +58,42 @@ class ConnectionPool:
         if self.is_closed:
             raise PoolError("cannot acquire connection from a closed pool")
 
-        total_conns: int = len(self.idle_conns) + len(self.active_leases)
         conn: FeatherConn | None = None
 
-        if len(self.idle_conns) > 0:
+        # Re-use healthy idle connections first
+        while len(self.idle_conns) > 0 and conn is None:
             last_idx: int = len(self.idle_conns) - 1
-            conn = self.idle_conns[last_idx]
+            candidate: FeatherConn = self.idle_conns[last_idx]
             new_idles: list[FeatherConn] = []
             i: int = 0
             while i < last_idx:
                 new_idles.append(self.idle_conns[i])
                 i = i + 1
             self.idle_conns = new_idles
-        elif total_conns < self.config.max_connections:
-            f: () -> FeatherConn = self.config.factory
-            conn = f()
-        else:
-            raise PoolError("connection pool exhausted: active connections reached limit of " + str(self.config.max_connections))
+
+            # Lightweight health check: verify connection liveness
+            is_alive: bool = True
+            try:
+                candidate.query("SELECT 1")
+            except Exception as e_ping:
+                is_alive = False
+
+            if is_alive:
+                conn = candidate
+            else:
+                try:
+                    candidate.close()
+                except Exception as e_close:
+                    pass
+
+        # If no healthy idle connection exists, create a new one up to limit
+        if conn is None:
+            total_conns: int = len(self.idle_conns) + len(self.active_leases)
+            if total_conns < self.config.max_connections:
+                f: () -> FeatherConn = self.config.factory
+                conn = f()
+            else:
+                raise PoolError("connection pool exhausted: active connections reached limit of " + str(self.config.max_connections))
 
         if conn is None:
             raise PoolError("failed to create or acquire connection")
@@ -100,14 +120,22 @@ class ConnectionPool:
 
         fc: FeatherConn = self.active_leases.pop(s.lease_id)
 
-        # Roll back any active transaction left open by the user
+        # Roll back any active transaction left open by the caller
+        is_poisoned: bool = False
+        s.in_transaction = False
         try:
             fc.execute("ROLLBACK")
         except Exception as e:
-            pass
+            msg: str = e.message
+            if not (nox.strings.contains(msg, "no transaction is active") or nox.strings.contains(msg, "no transaction in progress")):
+                # Rollback failed due to severed socket or corrupted connection
+                is_poisoned = True
 
-        if self.is_closed:
-            fc.close()
+        if is_poisoned or self.is_closed:
+            try:
+                fc.close()
+            except Exception as e_c:
+                pass
             return
 
         idles: list[FeatherConn] = self.idle_conns
@@ -126,23 +154,37 @@ class ConnectionPool:
 
         return len(self.idle_conns) + len(self.active_leases)
 
-    def close_all(self: ConnectionPool) -> None:
+    def close_all(self: ConnectionPool, force: bool = False) -> None:
 
         self.is_closed = True
-        # Close all idle connections
+        # Close all idle connections immediately
         i: int = 0
         while i < len(self.idle_conns):
-            self.idle_conns[i].close()
+            try:
+                self.idle_conns[i].close()
+            except Exception as e_i:
+                pass
             i = i + 1
         self.idle_conns = []
 
-        # Close all active leased connections
-        active_conns: list[FeatherConn] = self.active_leases.values()
-        j: int = 0
-        while j < len(active_conns):
-            active_conns[j].close()
-            j = j + 1
-        self.active_leases.clear()
+        if force:
+            # Force shutdown: aggressively close leased connections and clear leases
+            active_conns: list[FeatherConn] = self.active_leases.values()
+            j: int = 0
+            while j < len(active_conns):
+                try:
+                    active_conns[j].close()
+                except Exception as e_j:
+                    pass
+                j = j + 1
+            self.active_leases.clear()
+        # If graceful (force=False): active leases finish and close naturally on release_connection
+
+    def close_graceful(self: ConnectionPool) -> None:
+        self.close_all(False)
+
+    def close_force(self: ConnectionPool) -> None:
+        self.close_all(True)
 
 def create_pool(factory: () -> FeatherConn, dialect: Dialect, max_connections: int = 10) -> ConnectionPool:
     cfg: PoolConfig = PoolConfig(max_connections, factory, dialect)

@@ -40,8 +40,10 @@ class Transaction:
         try:
             self.session.execute_raw(begin_sql, empty_params)
             self.state = TX_STATE_ACTIVE
+            self.session.in_transaction = True
         except Exception as e:
             self.state = TX_STATE_FAILED
+            self.session.in_transaction = False
             raise TransactionError("failed to begin transaction: " + e.message)
 
     def commit(self: Transaction) -> None:
@@ -53,8 +55,10 @@ class Transaction:
         try:
             self.session.execute_raw("COMMIT", empty_params)
             self.state = TX_STATE_COMMITTED
+            self.session.in_transaction = False
         except Exception as e:
             self.state = TX_STATE_FAILED
+            self.session.in_transaction = False
             raise TransactionError("failed to commit transaction: " + e.message)
 
     def rollback(self: Transaction) -> None:
@@ -66,8 +70,10 @@ class Transaction:
         try:
             self.session.execute_raw("ROLLBACK", empty_params)
             self.state = TX_STATE_ROLLED_BACK
+            self.session.in_transaction = False
         except Exception as e:
             self.state = TX_STATE_FAILED
+            self.session.in_transaction = False
             raise TransactionError("failed to rollback transaction: " + e.message)
 
 def begin_transaction(s: Session) -> Transaction:

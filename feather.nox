@@ -31,10 +31,10 @@ import pool
 from pool import ConnectionPool, PoolConfig, create_pool, create_sqlite_pool
 
 import migrations
-from migrations import Migration, MigrationManager, migration, compute_migration_checksum
+from migrations import Migration, MigrationManager, migration, compute_migration_checksum, compute_legacy_migration_checksum
 
 import relations
-from relations import Relation, RelationLoader, has_one, has_many, belongs_to, many_to_many, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO, REL_MANY_TO_MANY
+from relations import Relation, RelationLoader, has_one, has_many, belongs_to, many_to_many, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO, REL_MANY_TO_MANY, BATCH_CHUNK_SIZE
 
 import nox.sqlite
 

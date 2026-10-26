@@ -5,6 +5,30 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-10-27
+
+### Added
+- **Poisoned / Severed Connection Isolation (`pool.nox`):**
+  - Detects broken, poisoned, or severed database sockets during uncommitted transaction rollback on connection release.
+  - Poisoned connections are permanently closed (`fc.close()`) and discarded, preventing recycled bad connections from corrupting subsequent callers.
+- **Connection Health Checks on Acquire (`pool.nox`):**
+  - Executes a lightweight liveness query (`SELECT 1`) on idle connections prior to lease issuance; dead connections are cleanly disposed of and replaced with fresh connections from the factory.
+- **Graceful vs Force Pool Shutdown (`pool.nox`):**
+  - `close_all(force: bool = False)`, `close_graceful()`, and `close_force()`.
+  - Default graceful shutdown marks the pool as closed to new requests while allowing in-flight leased sessions to complete their queries before closing upon release.
+- **Migration Checksum Backward Compatibility (`migrations.nox`):**
+  - Seamless automatic upgrade path from v0.2.0 (8-character DJB2) to modern SHA-256 (64 characters).
+  - Automatically validates legacy checksums with `compute_legacy_migration_checksum()` and upgrades the database tracking record in `_feather_migrations` to SHA-256 on the fly without breaking existing databases.
+- **Grouped Batched Relation Loading (`relations.nox`):**
+  - `RelationLoader.load_has_many_grouped[C]` and `load_relation_has_many_grouped[C]` returning `dict[int, list[C]]` mapping parent primary keys directly to their child records.
+- **Parameter Chunking for Large IN Clauses (`relations.nox`):**
+  - Added `BATCH_CHUNK_SIZE = 500` chunking in `load_has_many_batch` and `load_belongs_to_batch` to avoid database engine parameter limit violations.
+
+### Changed & Hardened
+- **Transaction State Tracking on Session (`session.nox`, `transaction.nox`):**
+  - Added `Session.in_transaction: bool` managed directly by `Transaction.begin()`, `commit()`, and `rollback()`.
+  - Avoids redundant rollback executions on clean connections during pool release.
+
 ## [0.2.1] - 2026-10-27
 
 ### Added

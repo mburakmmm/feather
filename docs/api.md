@@ -116,9 +116,11 @@ Begins transaction on session and returns active `Transaction`.
 Creates a bounded SQLite connection pool.
 
 ### `class ConnectionPool`
-- `acquire() -> Session`: Borrows a connection and wraps in a Session with a monotonic `lease_id`.
-- `release_connection(s: Session) -> None`: Validates lease, rolls back any uncommitted transactions, invalidates session (`is_released = True`), and returns borrowed connection to idle pool. Raises `PoolError` on double-release or foreign session.
-- `close_all() -> None`: Closes all idle connections in pool and marks pool closed.
+- `acquire() -> Session`: Reuses a healthy idle connection (verifying liveness via `SELECT 1` ping) or creates a fresh one via factory. Wraps connection in a Session with a monotonic `lease_id`.
+- `release_connection(s: Session) -> None`: Validates lease, rolls back uncommitted transactions (safely isolating and discarding poisoned connections if rollback fails), invalidates session (`is_released = True`), and returns healthy connection to idle pool. Raises `PoolError` on double-release or foreign session.
+- `close_all(force: bool = False) -> None`: Closes all idle connections in pool and marks pool closed. If `force=False` (graceful default), in-flight leased sessions can finish and close upon release; if `force=True`, active leased connections are terminated immediately.
+- `close_graceful() -> None`: Initiates graceful pool shutdown.
+- `close_force() -> None`: Initiates immediate force pool shutdown.
 - `in_use_count() -> int`: Number of currently borrowed active leases.
 - `idle_count() -> int`: Number of available idle connections.
 - Invariant guaranteed: `in_use_count() + idle_count() <= max_connections`.
@@ -129,6 +131,9 @@ Creates a bounded SQLite connection pool.
 
 ### `migration(version: int, name: str, up_sqls: list[str], down_sqls: list[str]) -> Migration`
 Defines a versioned migration.
+
+### `compute_legacy_migration_checksum(m: Migration) -> str`
+Computes legacy 8-character DJB2 checksum for backward compatibility with v0.2.0 migrations.
 
 ### `class MigrationManager`
 - `migrate_up() -> int`: Executes pending migrations inside transactions.
@@ -152,8 +157,10 @@ Defines belongs-to foreign key relation.
 
 ### `class RelationLoader`
 - `load_has_many[C](child_model: Model[C], fk_column: str, parent_pk_val: Value) -> list[C]`
-- `load_has_many_batch[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value]) -> list[C]`: Eagerly loads all matching children for multiple parent IDs in a single `WHERE fk IN (?, ?, ...)` query, eliminating N+1 queries.
+- `load_has_many_batch[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value]) -> list[C]`: Eagerly loads all matching children for multiple parent IDs in a single `WHERE fk IN (?, ?, ...)` query with chunking (`BATCH_CHUNK_SIZE = 500`), eliminating N+1 queries.
 - `load_relation_has_many_batch[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value]) -> list[C]`: Relation wrapper for batched has-many loading.
+- `load_has_many_grouped[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]`: Eagerly loads and groups matching children into a dictionary keyed by parent foreign key (`parent_pk -> list[Child]`).
+- `load_relation_has_many_grouped[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]`: Relation wrapper for grouped loading.
 - `load_belongs_to[P](parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None`
 - `load_belongs_to_batch[P](parent_model: Model[P], pk_column: str, fk_vals: list[Value]) -> list[P]`: Eagerly loads all matching parent entities for multiple foreign key values in a single `WHERE pk IN (?, ?, ...)` query.
 - `load_relation_belongs_to_batch[P](rel: Relation, parent_model: Model[P], fk_vals: list[Value]) -> list[P]`: Relation wrapper for batched belongs-to loading.

@@ -21,6 +21,8 @@ REL_HAS_MANY: int = 2
 REL_BELONGS_TO: int = 3
 REL_MANY_TO_MANY: int = 4
 
+BATCH_CHUNK_SIZE: int = 500
+
 class Relation:
     name: str
     rel_type: int
@@ -78,14 +80,67 @@ class RelationLoader:
         if len(parent_pk_vals) == 0:
             empty: list[C] = []
             return empty
-        q: SelectQuery = select_all(child_model.table.name)
-        q.where(is_in(fk_column, parent_pk_vals))
-        return self.session.execute_query[C](child_model, q)
+
+        if len(parent_pk_vals) <= BATCH_CHUNK_SIZE:
+            q: SelectQuery = select_all(child_model.table.name)
+            q.where(is_in(fk_column, parent_pk_vals))
+            return self.session.execute_query[C](child_model, q)
+
+        # Large batch: slice into chunks of BATCH_CHUNK_SIZE and aggregate
+        all_results: list[C] = []
+        offset: int = 0
+        while offset < len(parent_pk_vals):
+            chunk: list[Value] = []
+            end_idx: int = offset + BATCH_CHUNK_SIZE
+            if end_idx > len(parent_pk_vals):
+                end_idx = len(parent_pk_vals)
+            k: int = offset
+            while k < end_idx:
+                chunk.append(parent_pk_vals[k])
+                k = k + 1
+            q_chunk: SelectQuery = select_all(child_model.table.name)
+            q_chunk.where(is_in(fk_column, chunk))
+            chunk_res: list[C] = self.session.execute_query[C](child_model, q_chunk)
+            m: int = 0
+            while m < len(chunk_res):
+                all_results.append(chunk_res[m])
+                m = m + 1
+            offset = offset + BATCH_CHUNK_SIZE
+        return all_results
 
     def load_relation_has_many_batch[C](self: RelationLoader, rel: Relation, child_model: Model[C], parent_pk_vals: list[Value]) -> list[C]:
         if rel.rel_type != REL_HAS_MANY:
             raise RelationError("relation '" + rel.name + "' is not a has_many relation")
         return self.load_has_many_batch[C](child_model, rel.foreign_key, parent_pk_vals)
+
+    def load_has_many_grouped[C](self: RelationLoader, child_model: Model[C], fk_column: str, parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]:
+        all_children: list[C] = self.load_has_many_batch[C](child_model, fk_column, parent_pk_vals)
+        res: dict[int, list[C]] = {}
+        i: int = 0
+        while i < len(parent_pk_vals):
+            pv: Value = parent_pk_vals[i]
+            empty_init: list[C] = []
+            res[pv.i] = empty_init
+            i = i + 1
+
+        j: int = 0
+        while j < len(all_children):
+            c: C = all_children[j]
+            parent_id: int = get_fk(c)
+            if res.contains(parent_id):
+                sub: list[C] = res[parent_id]
+                sub.append(c)
+                res[parent_id] = sub
+            else:
+                new_list: list[C] = [c]
+                res[parent_id] = new_list
+            j = j + 1
+        return res
+
+    def load_relation_has_many_grouped[C](self: RelationLoader, rel: Relation, child_model: Model[C], parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]:
+        if rel.rel_type != REL_HAS_MANY:
+            raise RelationError("relation '" + rel.name + "' is not a has_many relation")
+        return self.load_has_many_grouped[C](child_model, rel.foreign_key, parent_pk_vals, get_fk)
 
     def load_belongs_to[P](self: RelationLoader, parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None:
 
@@ -101,9 +156,32 @@ class RelationLoader:
         if len(fk_vals) == 0:
             empty: list[P] = []
             return empty
-        q: SelectQuery = select_all(parent_model.table.name)
-        q.where(is_in(pk_column, fk_vals))
-        return self.session.execute_query[P](parent_model, q)
+
+        if len(fk_vals) <= BATCH_CHUNK_SIZE:
+            q: SelectQuery = select_all(parent_model.table.name)
+            q.where(is_in(pk_column, fk_vals))
+            return self.session.execute_query[P](parent_model, q)
+
+        all_parents: list[P] = []
+        offset_p: int = 0
+        while offset_p < len(fk_vals):
+            chunk_p: list[Value] = []
+            end_p: int = offset_p + BATCH_CHUNK_SIZE
+            if end_p > len(fk_vals):
+                end_p = len(fk_vals)
+            k_p: int = offset_p
+            while k_p < end_p:
+                chunk_p.append(fk_vals[k_p])
+                k_p = k_p + 1
+            q_chunk_p: SelectQuery = select_all(parent_model.table.name)
+            q_chunk_p.where(is_in(pk_column, chunk_p))
+            chunk_res_p: list[P] = self.session.execute_query[P](parent_model, q_chunk_p)
+            m_p: int = 0
+            while m_p < len(chunk_res_p):
+                all_parents.append(chunk_res_p[m_p])
+                m_p = m_p + 1
+            offset_p = offset_p + BATCH_CHUNK_SIZE
+        return all_parents
 
     def load_relation_belongs_to_batch[P](self: RelationLoader, rel: Relation, parent_model: Model[P], fk_vals: list[Value]) -> list[P]:
         if rel.rel_type != REL_BELONGS_TO:

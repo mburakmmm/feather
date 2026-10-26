@@ -1,0 +1,77 @@
+# tests/integration/migration_legacy_compat_test.nox — Integration test for v0.2.0 (8-char DJB2) to v0.2.2 (SHA-256) checksum compatibility.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration, val_int, val_str, Value
+import migrations
+from migrations import compute_legacy_migration_checksum
+import errors
+from errors import MigrationError
+import nox.db
+from nox.db import Row
+
+s: Session = open_sqlite_memory()
+
+# Define migration 1
+m1: Migration = migration(1, "create_users", [
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);"
+], [
+    "DROP TABLE users;"
+])
+
+# Define migration 2
+m2: Migration = migration(2, "add_email", [
+    "ALTER TABLE users ADD COLUMN email TEXT;"
+], [
+    "ALTER TABLE users DROP COLUMN email;"
+])
+
+# 1. Manually initialize the tracking table and seed with a v0.2.0 legacy 8-hex-char checksum
+mgr_init: MigrationManager = MigrationManager(s, [m1])
+mgr_init.init_table()
+
+legacy_hash: str = compute_legacy_migration_checksum(m1)
+nox.test.assert_eq_int(len(legacy_hash), 8, "Legacy checksum is exactly 8 characters long")
+
+# Execute migration 1 SQL manually
+s.execute_raw("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);", [])
+
+# Seed _feather_migrations with legacy checksum
+insert_legacy_sql: str = "INSERT INTO \"_feather_migrations\" (\"version\", \"name\", \"checksum\", \"applied_at\") VALUES (?, ?, ?, ?)"
+seed_params: list[Value] = [val_int(1), val_str("create_users"), val_str(legacy_hash), val_str("2026-10-27T00:00:00Z")]
+s.execute_raw(insert_legacy_sql, seed_params)
+
+# Verify seeded state has 8-character checksum
+rows_before: list[Row] = s.query_raw("SELECT checksum FROM \"_feather_migrations\" WHERE version = 1", [])
+nox.test.assert_eq_str(rows_before[0].get_str(0), legacy_hash, "Seeded with legacy 8-char checksum")
+
+# 2. Run MigrationManager with m1 and m2
+# Must automatically detect legacy checksum, verify it, update stored checksum to SHA-256, and apply m2
+mgr: MigrationManager = MigrationManager(s, [m1, m2])
+applied_count: int = mgr.migrate_up()
+nox.test.assert_eq_int(applied_count, 1, "Applied pending migration 2 successfully without checksum error")
+
+# 3. Verify that version 1 checksum was upgraded to SHA-256 (64 characters)
+rows_after: list[Row] = s.query_raw("SELECT checksum FROM \"_feather_migrations\" WHERE version = 1", [])
+upgraded_hash: str = rows_after[0].get_str(0)
+nox.test.assert_eq_int(len(upgraded_hash), 64, "Legacy checksum was automatically upgraded to 64-char SHA-256")
+nox.test.assert_eq_str(upgraded_hash, m1.get_checksum(), "Upgraded checksum matches modern SHA-256")
+
+# 4. Verify tamper detection on corrupted legacy checksum
+s_bad: Session = open_sqlite_memory()
+mgr_bad_init: MigrationManager = MigrationManager(s_bad, [m1])
+mgr_bad_init.init_table()
+corrupted_legacy_params: list[Value] = [val_int(1), val_str("create_users"), val_str("deadbeef"), val_str("now")]
+s_bad.execute_raw(insert_legacy_sql, corrupted_legacy_params)
+
+corrupted_caught: bool = False
+try:
+    mgr_bad_init.verify_checksums()
+except MigrationError as e:
+    corrupted_caught = True
+
+nox.test.assert_true(corrupted_caught, "Corrupted legacy checksum raises MigrationError")
+
+s.close()
+s_bad.close()
+print("migration_legacy_compat_test passed")

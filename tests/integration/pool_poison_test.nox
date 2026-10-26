@@ -1,0 +1,42 @@
+# tests/integration/pool_poison_test.nox — Integration tests verifying that poisoned/broken connections are discarded.
+
+import nox.test
+import feather
+from feather import ConnectionPool, create_sqlite_pool, Session, Table, Column, col_int, col_str, table, val_int, val_str
+import nox.sqlite
+
+test_tbl: Table = table("health_check_items", [col_int("id", True), col_str("name")])
+
+# 1. Create a pool of capacity 2
+cp: ConnectionPool = create_sqlite_pool(":memory:", 2)
+nox.test.assert_eq_int(cp.idle_count(), 0, "Initial idle is 0")
+
+# 2. Acquire session 1 and break its underlying connection
+s1: Session = cp.acquire()
+s1.create_table(test_tbl)
+s1.insert(test_tbl, {"id": val_int(1), "name": val_str("item1")})
+
+# Intentionally close the underlying physical connection to simulate network drop / dead connection
+s1.conn.close()
+
+# 3. Release the broken connection:
+# Pool must detect the severed connection during rollback/cleanup and discard it (NOT put into idle pool)
+cp.release_connection(s1)
+nox.test.assert_eq_int(cp.idle_count(), 0, "Poisoned connection was discarded, idle count remains 0")
+nox.test.assert_eq_int(cp.in_use_count(), 0, "In-use count is 0")
+nox.test.assert_eq_int(cp.total_count(), 0, "Total count reflects discarded broken connection")
+
+# 4. Next acquire must create a fresh, working connection from factory
+s2: Session = cp.acquire()
+nox.test.assert_eq_int(cp.in_use_count(), 1, "New fresh session is in use")
+s2.create_table(test_tbl)
+s2.insert(test_tbl, {"id": val_int(2), "name": val_str("item2")})
+c_val: int = s2.count(test_tbl)
+nox.test.assert_eq_int(c_val, 1, "New fresh connection functions properly")
+
+# 5. Clean release of healthy connection returns it to idle
+cp.release_connection(s2)
+nox.test.assert_eq_int(cp.idle_count(), 1, "Healthy connection returned to idle")
+
+cp.close_all()
+print("pool_poison_test passed")
