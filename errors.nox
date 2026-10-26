@@ -1,0 +1,74 @@
+# errors.nox — Hierarchical exceptions and error sanitization for Feather.
+
+import nox.strings
+
+class FeatherError(Exception):
+    pass
+
+class ConnectionError(FeatherError):
+    pass
+
+class QueryBuildError(FeatherError):
+    pass
+
+class IdentifierError(FeatherError):
+    pass
+
+class BindingError(FeatherError):
+    pass
+
+class MappingError(FeatherError):
+    pass
+
+class ConstraintError(FeatherError):
+    pass
+
+class TransactionError(FeatherError):
+    pass
+
+class DialectError(FeatherError):
+    pass
+
+class PoolError(FeatherError):
+    pass
+
+class MigrationError(FeatherError):
+    pass
+
+class RelationError(FeatherError):
+    pass
+
+# Redacts sensitive information from connection strings and error messages
+def sanitize_error_message(msg: str) -> str:
+    patterns: list[str] = ["password=", "pwd=", "pass=", "secret="]
+    result: str = msg
+    p_idx: int = 0
+    while p_idx < len(patterns):
+        pat: str = patterns[p_idx]
+        new_result: str = ""
+        curr: str = result
+        idx: int = nox.strings.index_of(curr, pat)
+        while idx >= 0:
+            end_pat: int = idx + len(pat)
+            val_end: int = end_pat
+            while val_end < len(curr) and curr[val_end] != " " and curr[val_end] != ";" and curr[val_end] != "&" and curr[val_end] != "@":
+                val_end = val_end + 1
+
+            prefix: str = ""
+            k: int = 0
+            while k < end_pat:
+                prefix = prefix + curr[k]
+                k = k + 1
+            new_result = new_result + prefix + "[REDACTED]"
+
+            rem: str = ""
+            m: int = val_end
+            while m < len(curr):
+                rem = rem + curr[m]
+                m = m + 1
+            curr = rem
+            idx = nox.strings.index_of(curr, pat)
+        new_result = new_result + curr
+        result = new_result
+        p_idx = p_idx + 1
+    return result

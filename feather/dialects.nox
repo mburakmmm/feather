@@ -1,0 +1,2 @@
+import dialects
+from dialects import Dialect, sqlite_dialect, postgres_dialect, mysql_dialect, get_dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL

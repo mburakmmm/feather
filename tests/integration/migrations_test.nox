@@ -1,0 +1,56 @@
+# tests/integration/migrations_test.nox — Integration tests for schema migrations.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration
+import nox.db
+from nox.db import Row
+
+s: Session = open_sqlite_memory()
+
+# Define 2 migrations
+m1: Migration = migration(1, "create_users", ["CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT)"], ["DROP TABLE IF EXISTS users"])
+
+m2: Migration = migration(2, "add_email_to_users", ["ALTER TABLE users ADD COLUMN email TEXT"], ["DROP TABLE IF EXISTS users"])
+
+mgr: MigrationManager = MigrationManager(s, [m1, m2])
+
+# 1. Initial State
+pending_init: list[Migration] = mgr.get_pending_migrations()
+nox.test.assert_eq_int(len(pending_init), 2, "Initially 2 migrations pending")
+nox.test.assert_true(not mgr.is_applied(1), "Migration 1 is not applied initially")
+nox.test.assert_true(not mgr.is_applied(2), "Migration 2 is not applied initially")
+
+# 2. Run migrate_up
+applied_count: int = mgr.migrate_up()
+nox.test.assert_eq_int(applied_count, 2, "Both migrations applied")
+nox.test.assert_true(mgr.is_applied(1), "Migration 1 is applied")
+nox.test.assert_true(mgr.is_applied(2), "Migration 2 is applied")
+
+# Verify table and column exist by inserting a record
+s.execute_raw("INSERT INTO users (id, username, email) VALUES (1, 'alice', 'alice@test.com')", [])
+rows: list[Row] = s.query_raw("SELECT username, email FROM users WHERE id = 1", [])
+nox.test.assert_eq_int(len(rows), 1, "Inserted record exists in migrated schema")
+nox.test.assert_eq_str(rows[0].get_str(0), "alice", "Username matches")
+nox.test.assert_eq_str(rows[0].get_str(1), "alice@test.com", "Email column added by migration 2 works")
+
+# 3. Idempotency check
+pending_after: list[Migration] = mgr.get_pending_migrations()
+nox.test.assert_eq_int(len(pending_after), 0, "No pending migrations left")
+reapply_count: int = mgr.migrate_up()
+nox.test.assert_eq_int(reapply_count, 0, "Re-running migrate_up applies 0 migrations")
+
+# 4. Status check
+stat: list[str] = mgr.status()
+nox.test.assert_eq_int(len(stat), 2, "Status reports 2 migrations")
+nox.test.assert_true("[x] 1 - create_users (applied)" in stat[0], "Migration 1 status is applied")
+nox.test.assert_true("[x] 2 - add_email_to_users (applied)" in stat[1], "Migration 2 status is applied")
+
+# 5. Migrate Down to version 0 (complete rollback)
+down_count: int = mgr.migrate_down(0)
+nox.test.assert_eq_int(down_count, 2, "Both migrations rolled back")
+nox.test.assert_true(not mgr.is_applied(1), "Migration 1 unapplied")
+nox.test.assert_true(not mgr.is_applied(2), "Migration 2 unapplied")
+
+s.close()
+print("migrations_test passed")

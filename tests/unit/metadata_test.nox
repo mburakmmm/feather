@@ -1,0 +1,71 @@
+# tests/unit/metadata_test.nox — Unit tests for schema and metadata validation.
+
+import nox.test
+import metadata
+from metadata import Column, Table, col_int, col_str, col_float, col_bool, table, validate_identifier, TYPE_INTEGER, TYPE_TEXT, TYPE_REAL, TYPE_BOOLEAN
+import errors
+from errors import IdentifierError, QueryBuildError
+
+# 1. Identifier validation
+nox.test.assert_true(validate_identifier("users"), "'users' is a valid identifier")
+nox.test.assert_true(validate_identifier("user_id"), "'user_id' is a valid identifier")
+nox.test.assert_true(validate_identifier("_internal"), "'_internal' is a valid identifier")
+nox.test.assert_true(validate_identifier("Table123"), "'Table123' is a valid identifier")
+
+nox.test.assert_true(not validate_identifier(""), "Empty string is invalid identifier")
+nox.test.assert_true(not validate_identifier("123users"), "Starting with digit is invalid identifier")
+nox.test.assert_true(not validate_identifier("users;drop table"), "Semicolon is invalid identifier")
+nox.test.assert_true(not validate_identifier("user name"), "Whitespace is invalid identifier")
+nox.test.assert_true(not validate_identifier("users--comment"), "Dashes are invalid identifier")
+nox.test.assert_true(not validate_identifier("users\"injection"), "Quotes are invalid identifier")
+
+# 2. Column creation
+c1: Column = col_int("id", True, False, True)
+nox.test.assert_eq_str(c1.name, "id", "c1 name is id")
+nox.test.assert_eq_int(c1.data_type, TYPE_INTEGER, "c1 type is integer")
+nox.test.assert_true(c1.is_primary_key, "c1 is primary key")
+nox.test.assert_true(not c1.is_nullable, "c1 is not nullable")
+nox.test.assert_true(c1.is_auto_increment, "c1 is auto increment")
+
+c2: Column = col_str("email", False, True)
+nox.test.assert_eq_str(c2.name, "email", "c2 name is email")
+nox.test.assert_eq_int(c2.data_type, TYPE_TEXT, "c2 type is text")
+nox.test.assert_true(c2.is_unique, "c2 is unique")
+
+# 3. Table creation
+cols: list[Column] = [c1, c2, col_float("score", True), col_bool("active")]
+t: Table = table("accounts", cols)
+nox.test.assert_eq_str(t.name, "accounts", "table name is accounts")
+nox.test.assert_eq_str(t.primary_key, "id", "primary key is id")
+nox.test.assert_eq_int(len(t.columns), 4, "4 columns registered")
+nox.test.assert_true(t.has_column("email"), "has_column email is true")
+nox.test.assert_true(not t.has_column("missing"), "has_column missing is false")
+
+# 4. Table validation errors
+# Duplicate column error
+dup_cols: list[Column] = [col_int("id", True), col_str("name"), col_str("name")]
+dup_failed: bool = False
+try:
+    tbl_dup: Table = table("invalid_tbl", dup_cols)
+except QueryBuildError as e1:
+    dup_failed = True
+nox.test.assert_true(dup_failed, "Table creation fails when duplicate columns are provided")
+
+# Multiple primary keys error
+multi_pk_cols: list[Column] = [col_int("id1", True), col_int("id2", True)]
+multi_failed: bool = False
+try:
+    tbl_multi: Table = table("multi_pk", multi_pk_cols)
+except QueryBuildError as e2:
+    multi_failed = True
+nox.test.assert_true(multi_failed, "Table creation fails when multiple primary keys are provided")
+
+# Invalid table identifier
+invalid_id_failed: bool = False
+try:
+    tbl_inv: Table = table("bad table;drop", [c1])
+except IdentifierError as e3:
+    invalid_id_failed = True
+nox.test.assert_true(invalid_id_failed, "Table creation fails with malicious table name")
+
+print("metadata_test passed")

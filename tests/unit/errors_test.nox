@@ -1,0 +1,22 @@
+# tests/unit/errors_test.nox — Unit tests for errors and credential sanitization.
+
+import nox.test
+import errors
+from errors import FeatherError, ConnectionError, QueryBuildError, IdentifierError, BindingError, MappingError, ConstraintError, TransactionError, DialectError, PoolError, MigrationError, sanitize_error_message
+
+# 1. Error hierarchy
+e1: FeatherError = ConnectionError("failed to connect")
+nox.test.assert_eq_str(e1.message, "failed to connect", "Error message retained")
+
+# 2. Credential sanitization
+raw_msg1: str = "failed connecting to postgres://user:password=mysecret123@localhost:5432/db"
+sanitized1: str = sanitize_error_message(raw_msg1)
+nox.test.assert_true("password=[REDACTED]" in sanitized1, "password parameter is redacted")
+nox.test.assert_true("mysecret123" not in sanitized1, "secret password does not appear in sanitized message")
+
+raw_msg2: str = "access denied for user root with pass=SuperSecret; host 127.0.0.1"
+sanitized2: str = sanitize_error_message(raw_msg2)
+nox.test.assert_true("pass=[REDACTED]" in sanitized2, "pass parameter is redacted")
+nox.test.assert_true("SuperSecret" not in sanitized2, "SuperSecret does not appear in sanitized message")
+
+print("errors_test passed")

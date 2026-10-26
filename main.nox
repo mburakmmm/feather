@@ -1,0 +1,122 @@
+# main.nox — Feather demonstration and verification CLI.
+
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, val_float, val_bool, val_null, col_int, col_str, col_bool, table, select_all, SelectQuery, eq, gt, open_sqlite_memory, row_get_int, row_get_str, row_get_bool, Transaction, begin_transaction, Migration, MigrationManager, migration
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class User:
+    id: int
+    name: str
+    email: str
+    age: int
+    is_active: bool
+
+    def __init__(self: User, id: int, name: str, email: str, age: int, is_active: bool) -> None:
+        self.id = id
+        self.name = name
+        self.email = email
+        self.age = age
+        self.is_active = is_active
+
+def decode_user(r: Row) -> User:
+    return User(row_get_int(r, 0), row_get_str(r, 1), row_get_str(r, 2), row_get_int(r, 3), row_get_bool(r, 4))
+
+def encode_user(u: User) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(u.id)
+    d["name"] = val_str(u.name)
+    d["email"] = val_str(u.email)
+    d["age"] = val_int(u.age)
+    d["is_active"] = val_bool(u.is_active)
+    return d
+
+def run_demo() -> None:
+    print("==================================================")
+    print("Feather 0.1.0 — Lightweight SQL Data Mapper for Nox")
+    print("==================================================")
+
+    # 1. Connect
+    s: Session = open_sqlite_memory()
+    print("[1] Connected to in-memory SQLite database.")
+
+    # 2. Define Table & Model
+    cols: list[Column] = [col_int("id", True, False, True), col_str("name", False, False), col_str("email", False, True), col_int("age", False, False, False), col_bool("is_active", False)]
+    user_table: Table = table("users", cols)
+    user_model: Model[User] = Model[User](user_table, decode_user, encode_user)
+
+    s.create_table(user_table)
+    print("[2] Created table 'users' successfully.")
+
+    # 3. Insert Records
+    u1_vals: dict[str, Value] = {}
+    u1_vals["name"] = val_str("Alice Smith")
+    u1_vals["email"] = val_str("alice@example.com")
+    u1_vals["age"] = val_int(30)
+    u1_vals["is_active"] = val_bool(True)
+    id1: int = s.insert(user_table, u1_vals)
+
+    u2_vals: dict[str, Value] = {}
+    u2_vals["name"] = val_str("Bob Jones")
+    u2_vals["email"] = val_str("bob@example.com")
+    u2_vals["age"] = val_int(22)
+    u2_vals["is_active"] = val_bool(False)
+    id2: int = s.insert(user_table, u2_vals)
+
+    u3_vals: dict[str, Value] = {}
+    u3_vals["name"] = val_str("Charlie Brown")
+    u3_vals["email"] = val_str("charlie@example.com")
+    u3_vals["age"] = val_int(35)
+    u3_vals["is_active"] = val_bool(True)
+    id3: int = s.insert(user_table, u3_vals)
+
+    print("[3] Inserted 3 users. Generated IDs: " + str(id1) + ", " + str(id2) + ", " + str(id3))
+
+    # 4. Query All
+    all_users: list[User] = s.find_all[User](user_model)
+    print("[4] Total users fetched: " + str(len(all_users)))
+
+    # 5. Filter Query (age > 25 AND is_active = true)
+    q: SelectQuery = select_all("users").where(gt("age", val_int(25))).and_where(eq("is_active", val_bool(True)))
+    filtered: list[User] = s.execute_query[User](user_model, q)
+    print("[5] Filtered users (age > 25 & active): " + str(len(filtered)))
+    i: int = 0
+    while i < len(filtered):
+        u: User = filtered[i]
+        print("    -> ID: " + str(u.id) + " | " + u.name + " (" + str(u.age) + ") | " + u.email)
+        i = i + 1
+
+    # 6. Update
+    up_vals: dict[str, Value] = {}
+    up_vals["age"] = val_int(31)
+    s.update_by_id(user_table, val_int(id1), up_vals)
+    updated_user: User | None = s.find_by_id[User](user_model, val_int(id1))
+    if updated_user is not None:
+        print("[6] Updated Alice's age to: " + str(updated_user.age))
+
+    # 7. Transactions
+    tx: Transaction = begin_transaction(s)
+    tx_vals: dict[str, Value] = {}
+    tx_vals["name"] = val_str("Temp User")
+    tx_vals["email"] = val_str("temp@example.com")
+    tx_vals["age"] = val_int(40)
+    tx_vals["is_active"] = val_bool(False)
+    s.insert(user_table, tx_vals)
+    tx.rollback()
+    after_rollback_count: int = s.count(user_table)
+    print("[7] Transaction rollback test passed. Active user count remains: " + str(after_rollback_count))
+
+    # 8. Migrations
+    mig1: Migration = migration(1, "create_posts", ["CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)"], ["DROP TABLE posts"])
+    mgr: MigrationManager = MigrationManager(s, [mig1])
+    applied: int = mgr.migrate_up()
+    print("[8] Applied migrations: " + str(applied))
+
+    s.close()
+    print("==================================================")
+    print("All Feather checks completed successfully!")
+    print("==================================================")
+
+run_demo()

@@ -1,0 +1,57 @@
+# examples/crud.nox — Complete CRUD operations demonstration.
+
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, val_float, val_bool, col_int, col_str, col_float, table, select_all, SelectQuery, eq, open_sqlite_memory, row_get_int, row_get_str, row_get_float
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Product:
+    id: int
+    name: str
+    price: float
+
+    def __init__(self: Product, id: int, name: str, price: float) -> None:
+        self.id = id
+        self.name = name
+        self.price = price
+
+def decode_product(r: Row) -> Product:
+    return Product(row_get_int(r, 0), row_get_str(r, 1), row_get_float(r, 2))
+
+def encode_product(p: Product) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(p.id)
+    d["name"] = val_str(p.name)
+    d["price"] = val_float(p.price)
+    return d
+
+def run() -> None:
+    s: Session = open_sqlite_memory()
+    t: Table = table("products", [col_int("id", True, False, True), col_str("name"), col_float("price")])
+    m: Model[Product] = Model[Product](t, decode_product, encode_product)
+    s.create_table(t)
+
+    # CREATE
+    id1: int = s.insert(t, {"name": val_str("Keyboard"), "price": val_float(79.99)})
+    id2: int = s.insert(t, {"name": val_str("Mouse"), "price": val_float(49.99)})
+    print("Inserted Products: " + str(id1) + ", " + str(id2))
+
+    # READ ALL
+    items: list[Product] = s.find_all[Product](m)
+    print("Total Products: " + str(len(items)))
+
+    # UPDATE
+    s.update_by_id(t, val_int(id1), {"price": val_float(69.99)})
+    updated: Product | None = s.find_by_id[Product](m, val_int(id1))
+    if updated is not None:
+        print("Updated Keyboard price: " + str(updated.price))
+
+    # DELETE
+    s.delete_by_id(t, val_int(id2))
+    print("Remaining Products: " + str(s.count(t)))
+
+    s.close()
+
+run()

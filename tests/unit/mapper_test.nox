@@ -1,0 +1,71 @@
+# tests/unit/mapper_test.nox — Unit tests for row getters and model decoding/encoding.
+
+import nox.test
+import nox.db
+from nox.db import Row
+import mapper
+from mapper import Model, row_get_int, row_get_str, row_get_float, row_get_bool, row_is_null, row_get_opt_int, row_get_opt_str, row_get_opt_float, row_get_opt_bool, find_column_index, row_get_str_by_name, row_get_int_by_name
+import metadata
+from metadata import Table, col_int, col_str, table
+import value
+from value import Value, val_int, val_str
+
+class Product:
+    id: int
+    name: str
+    price: float
+    is_in_stock: bool
+    notes: str | None
+
+    def __init__(self: Product, id: int, name: str, price: float, is_in_stock: bool, notes: str | None) -> None:
+        self.id = id
+        self.name = name
+        self.price = price
+        self.is_in_stock = is_in_stock
+        self.notes = notes
+
+def decode_product(r: Row) -> Product:
+    return Product(row_get_int(r, 0), row_get_str(r, 1), row_get_float(r, 2), row_get_bool(r, 3), row_get_opt_str(r, 4))
+
+def encode_product(p: Product) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(p.id)
+    d["name"] = val_str(p.name)
+    return d
+
+# Create mock Row: id=10, name="Gizmo", price="19.99", in_stock="1", notes=NULL
+names: list[str] = ["id", "name", "price", "is_in_stock", "notes"]
+vals: list[str] = ["10", "Gizmo", "19.99", "1", ""]
+null_flags: list[bool] = [False, False, False, False, True]
+r: Row = Row(vals, null_flags, names)
+
+# 1. Basic typed getters
+nox.test.assert_eq_int(row_get_int(r, 0), 10, "row_get_int returns 10")
+nox.test.assert_eq_str(row_get_str(r, 1), "Gizmo", "row_get_str returns Gizmo")
+nox.test.assert_true(row_get_float(r, 2) > 19.98 and row_get_float(r, 2) < 20.0, "row_get_float returns 19.99")
+nox.test.assert_true(row_get_bool(r, 3), "row_get_bool parses '1' as True")
+
+# 2. Nullable getters
+nox.test.assert_true(row_is_null(r, 4), "row_is_null is true for NULL column")
+opt_note: str | None = row_get_opt_str(r, 4)
+nox.test.assert_true(opt_note is None, "row_get_opt_str returns None for NULL column")
+
+opt_name: str | None = row_get_opt_str(r, 1)
+nox.test.assert_true(opt_name is not None, "row_get_opt_str returns value for present column")
+
+# 3. By-name getters
+nox.test.assert_eq_int(find_column_index(r, "name"), 1, "find_column_index finds 'name' at 1")
+nox.test.assert_eq_int(find_column_index(r, "missing"), -1, "find_column_index returns -1 for missing")
+nox.test.assert_eq_str(row_get_str_by_name(r, "name"), "Gizmo", "row_get_str_by_name returns Gizmo")
+nox.test.assert_eq_int(row_get_int_by_name(r, "id"), 10, "row_get_int_by_name returns 10")
+
+# 4. Model decode
+tbl: Table = table("products", [col_int("id", True), col_str("name")])
+model: Model[Product] = Model[Product](tbl, decode_product, encode_product)
+p: Product = model.decode(r)
+nox.test.assert_eq_int(p.id, 10, "Model decoded product ID")
+nox.test.assert_eq_str(p.name, "Gizmo", "Model decoded product name")
+nox.test.assert_true(p.is_in_stock, "Model decoded product stock status")
+nox.test.assert_true(p.notes is None, "Model decoded null notes as None")
+
+print("mapper_test passed")

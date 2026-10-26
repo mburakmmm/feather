@@ -1,0 +1,12 @@
+# Compiler artifacts
+.nox/
+*.o
+*.s
+*.ll
+bin/
+
+# Temporary files
+/tmp/
+*.tmp
+*.db
+.DS_Store

@@ -1,0 +1,60 @@
+# examples/query_filters.nox — Query builder expressions and filters.
+
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, val_bool, col_int, col_str, col_bool, table, select_all, SelectQuery, eq, gt, lte, like, is_in, ORDER_DESC, open_sqlite_memory, row_get_int, row_get_str, row_get_bool
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Employee:
+    id: int
+    name: str
+    department: str
+    salary: int
+    is_active: bool
+
+    def __init__(self: Employee, id: int, name: str, department: str, salary: int, is_active: bool) -> None:
+        self.id = id
+        self.name = name
+        self.department = department
+        self.salary = salary
+        self.is_active = is_active
+
+def decode_emp(r: Row) -> Employee:
+    return Employee(row_get_int(r, 0), row_get_str(r, 1), row_get_str(r, 2), row_get_int(r, 3), row_get_bool(r, 4))
+
+def encode_emp(e: Employee) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(e.id)
+    d["name"] = val_str(e.name)
+    d["department"] = val_str(e.department)
+    d["salary"] = val_int(e.salary)
+    d["is_active"] = val_bool(e.is_active)
+    return d
+
+def run() -> None:
+    s: Session = open_sqlite_memory()
+    t: Table = table("employees", [col_int("id", True, False, True), col_str("name"), col_str("department"), col_int("salary"), col_bool("is_active")])
+    m: Model[Employee] = Model[Employee](t, decode_emp, encode_emp)
+    s.create_table(t)
+
+    s.insert(t, {"name": val_str("Alice"), "department": val_str("Engineering"), "salary": val_int(120000), "is_active": val_bool(True)})
+    s.insert(t, {"name": val_str("Bob"), "department": val_str("Marketing"), "salary": val_int(85000), "is_active": val_bool(True)})
+    s.insert(t, {"name": val_str("Charlie"), "department": val_str("Engineering"), "salary": val_int(95000), "is_active": val_bool(False)})
+    s.insert(t, {"name": val_str("Dana"), "department": val_str("Engineering"), "salary": val_int(140000), "is_active": val_bool(True)})
+
+    # Filter: Engineering department AND salary >= 100000 ORDER BY salary DESC
+    q: SelectQuery = select_all("employees").where(eq("department", val_str("Engineering"))).and_where(gt("salary", val_int(99999))).order_by("salary", ORDER_DESC)
+    senior_engineers: list[Employee] = s.execute_query[Employee](m, q)
+
+    print("Senior Active Engineers:")
+    i: int = 0
+    while i < len(senior_engineers):
+        emp: Employee = senior_engineers[i]
+        print("  - " + emp.name + " ($" + str(emp.salary) + ")")
+        i = i + 1
+
+    s.close()
+
+run()

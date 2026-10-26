@@ -1,0 +1,41 @@
+# tests/unit/values_test.nox — Unit tests for Feather parameter values.
+
+import nox.test
+import value
+from value import Value, val_int, val_str, val_float, val_bool, val_null, format_bound_values, VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_NULL
+
+# 1. Constructor and kinds
+v1: Value = val_int(42)
+nox.test.assert_eq_int(v1.kind, VAL_INT, "val_int kind is VAL_INT")
+nox.test.assert_eq_int(v1.i, 42, "val_int stores integer value")
+nox.test.assert_eq_str(v1.to_string(), "42", "val_int stringifies to 42")
+
+v2: Value = val_str("hello world")
+nox.test.assert_eq_int(v2.kind, VAL_STR, "val_str kind is VAL_STR")
+nox.test.assert_eq_str(v2.s, "hello world", "val_str stores string value")
+nox.test.assert_eq_str(v2.to_string(), "hello world", "val_str stringifies to content")
+
+v3: Value = val_float(3.14)
+nox.test.assert_eq_int(v3.kind, VAL_FLOAT, "val_float kind is VAL_FLOAT")
+nox.test.assert_true(v3.f > 3.13 and v3.f < 3.15, "val_float stores float value")
+
+v4: Value = val_bool(True)
+nox.test.assert_eq_int(v4.kind, VAL_BOOL, "val_bool kind is VAL_BOOL")
+nox.test.assert_true(v4.b, "val_bool stores true")
+nox.test.assert_eq_str(v4.to_string(), "true", "val_bool stringifies to true")
+
+v5: Value = val_null()
+nox.test.assert_eq_int(v5.kind, VAL_NULL, "val_null kind is VAL_NULL")
+nox.test.assert_true(v5.is_null, "val_null has is_null True")
+nox.test.assert_eq_str(v5.to_string(), "NULL", "val_null stringifies to NULL")
+
+# 2. Equality
+v1_dup: Value = val_int(42)
+nox.test.assert_true(v1.equals(v1_dup), "Identical int values are equal")
+nox.test.assert_true(not v1.equals(v2), "Different kind values are not equal")
+
+# 3. Format bound values
+formatted: str = format_bound_values([v1, v2, v5])
+nox.test.assert_eq_str(formatted, "[42, hello world, NULL]", "format_bound_values produces correct formatted list")
+
+print("values_test passed")

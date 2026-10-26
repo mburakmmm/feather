@@ -1,0 +1,51 @@
+# examples/quickstart.nox — Quick start example for Feather ORM in Nox.
+
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, val_bool, col_int, col_str, col_bool, table, select_all, SelectQuery, eq, open_sqlite_memory, row_get_int, row_get_str, row_get_bool
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Task:
+    id: int
+    title: str
+    done: bool
+
+    def __init__(self: Task, id: int, title: str, done: bool) -> None:
+        self.id = id
+        self.title = title
+        self.done = done
+
+def decode_task(r: Row) -> Task:
+    return Task(row_get_int(r, 0), row_get_str(r, 1), row_get_bool(r, 2))
+
+def encode_task(t: Task) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(t.id)
+    d["title"] = val_str(t.title)
+    d["done"] = val_bool(t.done)
+    return d
+
+def run() -> None:
+    # 1. Open database connection
+    s: Session = open_sqlite_memory()
+
+    # 2. Declare schema and model
+    cols: list[Column] = [col_int("id", True, False, True), col_str("title"), col_bool("done")]
+    task_tbl: Table = table("tasks", cols)
+    task_model: Model[Task] = Model[Task](task_tbl, decode_task, encode_task)
+    s.create_table(task_tbl)
+
+    # 3. Insert record
+    id_val: int = s.insert(task_tbl, {"title": val_str("Try Feather ORM"), "done": val_bool(True)})
+    print("Created Task ID: " + str(id_val))
+
+    # 4. Fetch by ID
+    t: Task | None = s.find_by_id[Task](task_model, val_int(id_val))
+    if t is not None:
+        print("Task: " + t.title + " (done=" + str(t.done) + ")")
+
+    s.close()
+
+run()

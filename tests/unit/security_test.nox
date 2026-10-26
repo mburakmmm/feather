@@ -1,0 +1,42 @@
+# tests/unit/security_test.nox — Unit tests for security invariants and injection prevention.
+
+import nox.test
+import metadata
+from metadata import validate_identifier, Column, Table, col_int, col_str, table
+import errors
+from errors import IdentifierError, QueryBuildError
+import query
+from query import SelectQuery, CompiledQuery, select_all, eq
+import value
+from value import Value, val_str
+import dialects
+from dialects import sqlite_dialect, Dialect
+
+d_lite: Dialect = sqlite_dialect()
+
+# 1. Malicious identifier injection attempts must fail validation
+malicious_identifiers: list[str] = ["users; DROP TABLE users;--", "users' OR '1'='1", "users\" OR \"1\"=\"1", "users/*comment*/", "users`--", "users UNION SELECT * FROM passwords"]
+
+i: int = 0
+while i < len(malicious_identifiers):
+    bad_name: str = malicious_identifiers[i]
+    nox.test.assert_true(not validate_identifier(bad_name), "Malicious identifier rejected: " + bad_name)
+
+    caught_id_err: bool = False
+    try:
+        t_bad: Table = table(bad_name, [col_int("id", True)])
+    except IdentifierError as e:
+        caught_id_err = True
+    nox.test.assert_true(caught_id_err, "Table creation with malicious identifier raised IdentifierError: " + bad_name)
+    i = i + 1
+
+# 2. Value SQL injection payload is bound safely as a parameter, NOT concatenated
+injection_val: str = "admin' OR '1'='1' --"
+q: SelectQuery = select_all("users").where(eq("username", val_str(injection_val)))
+c: CompiledQuery = q.compile(d_lite)
+
+nox.test.assert_eq_str(c.sql, "SELECT * FROM \"users\" WHERE \"username\" = ?", "SQL contains only placeholder ? and no concatenated injection fragment")
+nox.test.assert_eq_int(len(c.params), 1, "Exactly 1 bound parameter")
+nox.test.assert_eq_str(c.params[0].to_string(), injection_val, "Injection payload remains safely inside the parameter value")
+
+print("security_test passed")

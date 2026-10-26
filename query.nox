@@ -1,0 +1,316 @@
+# query.nox — Type-safe SQL AST and query builder for Feather.
+
+import errors
+from errors import QueryBuildError
+import metadata
+from metadata import assert_valid_identifier
+import value
+from value import Value, val_int, val_str, val_float, val_bool, val_null
+import dialects
+from dialects import Dialect
+import nox.strings
+
+OP_EQ: int = 1
+OP_NEQ: int = 2
+OP_GT: int = 3
+OP_GTE: int = 4
+OP_LT: int = 5
+OP_LTE: int = 6
+OP_LIKE: int = 7
+OP_IS_NULL: int = 8
+OP_IS_NOT_NULL: int = 9
+OP_IN: int = 10
+
+LOGIC_AND: int = 1
+LOGIC_OR: int = 2
+
+ORDER_ASC: int = 1
+ORDER_DESC: int = 2
+
+JOIN_INNER: int = 1
+JOIN_LEFT: int = 2
+
+class Predicate:
+    col_name: str
+    op: int
+    val: Value
+    val_list: list[Value]
+
+    def __init__(self: Predicate, col_name: str, op: int, val: Value, val_list: list[Value]) -> None:
+        assert_valid_identifier(col_name, "predicate column")
+        self.col_name = col_name
+        self.op = op
+        self.val = val
+        self.val_list = val_list
+
+def eq(col: str, val: Value) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_EQ, val, empty_list)
+
+def neq(col: str, val: Value) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_NEQ, val, empty_list)
+
+def gt(col: str, val: Value) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_GT, val, empty_list)
+
+def gte(col: str, val: Value) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_GTE, val, empty_list)
+
+def lt(col: str, val: Value) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_LT, val, empty_list)
+
+def lte(col: str, val: Value) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_LTE, val, empty_list)
+
+def like(col: str, pattern: str) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_LIKE, val_str(pattern), empty_list)
+
+def is_null(col: str) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_IS_NULL, val_null(), empty_list)
+
+def is_not_null(col: str) -> Predicate:
+    empty_list: list[Value] = []
+    return Predicate(col, OP_IS_NOT_NULL, val_null(), empty_list)
+
+def is_in(col: str, vals: list[Value]) -> Predicate:
+    return Predicate(col, OP_IN, val_null(), vals)
+
+class WhereClause:
+    predicates: list[Predicate]
+    logics: list[int]
+
+    def __init__(self: WhereClause) -> None:
+        self.predicates = []
+        self.logics = []
+
+    def add(self: WhereClause, pred: Predicate, logic: int) -> None:
+
+        preds: list[Predicate] = self.predicates
+        preds.append(pred)
+        self.predicates = preds
+        logs: list[int] = self.logics
+        logs.append(logic)
+        self.logics = logs
+
+    def is_empty(self: WhereClause) -> bool:
+
+        return len(self.predicates) == 0
+
+class JoinClause:
+    join_type: int
+    target_table: str
+    left_col: str
+    right_col: str
+
+    def __init__(self: JoinClause, join_type: int, target_table: str, left_col: str, right_col: str) -> None:
+        assert_valid_identifier(target_table, "join table")
+        assert_valid_identifier(left_col, "join left column")
+        assert_valid_identifier(right_col, "join right column")
+        self.join_type = join_type
+        self.target_table = target_table
+        self.left_col = left_col
+        self.right_col = right_col
+
+class CompiledQuery:
+    sql: str
+    params: list[Value]
+
+    def __init__(self: CompiledQuery, sql: str, params: list[Value]) -> None:
+        self.sql = sql
+        self.params = params
+
+class SelectQuery:
+    table_name: str
+    columns: list[str]
+    where_clause: WhereClause
+    order_cols: list[str]
+    order_dirs: list[int]
+    limit_val: int
+    offset_val: int
+    joins: list[JoinClause]
+
+    def __init__(self: SelectQuery, table_name: str, columns: list[str]) -> None:
+        assert_valid_identifier(table_name, "query table")
+        i: int = 0
+        while i < len(columns):
+            if columns[i] != "*":
+                assert_valid_identifier(columns[i], "query select column")
+            i = i + 1
+        self.table_name = table_name
+        self.columns = columns
+        self.where_clause = WhereClause()
+        self.order_cols = []
+        self.order_dirs = []
+        self.limit_val = -1
+        self.offset_val = -1
+        self.joins = []
+
+    def where(self: SelectQuery, pred: Predicate) -> SelectQuery:
+
+        self.where_clause.add(pred, LOGIC_AND)
+        return self
+
+    def and_where(self: SelectQuery, pred: Predicate) -> SelectQuery:
+
+        self.where_clause.add(pred, LOGIC_AND)
+        return self
+
+    def or_where(self: SelectQuery, pred: Predicate) -> SelectQuery:
+
+        self.where_clause.add(pred, LOGIC_OR)
+        return self
+
+    def order_by(self: SelectQuery, col: str, direction: int = 1) -> SelectQuery:
+
+        assert_valid_identifier(col, "order by column")
+        cols: list[str] = self.order_cols
+        cols.append(col)
+        self.order_cols = cols
+        dirs: list[int] = self.order_dirs
+        dirs.append(direction)
+        self.order_dirs = dirs
+        return self
+
+    def limit(self: SelectQuery, n: int) -> SelectQuery:
+
+        if n < 0:
+            raise QueryBuildError("LIMIT cannot be negative: " + str(n))
+        self.limit_val = n
+        return self
+
+    def offset(self: SelectQuery, m: int) -> SelectQuery:
+
+        if m < 0:
+            raise QueryBuildError("OFFSET cannot be negative: " + str(m))
+        self.offset_val = m
+        return self
+
+    def inner_join(self: SelectQuery, target_tbl: str, left_col: str, right_col: str) -> SelectQuery:
+
+        j_list: list[JoinClause] = self.joins
+        j_list.append(JoinClause(JOIN_INNER, target_tbl, left_col, right_col))
+        self.joins = j_list
+        return self
+
+    def left_join(self: SelectQuery, target_tbl: str, left_col: str, right_col: str) -> SelectQuery:
+
+        j_list: list[JoinClause] = self.joins
+        j_list.append(JoinClause(JOIN_LEFT, target_tbl, left_col, right_col))
+        self.joins = j_list
+        return self
+
+    def compile(self: SelectQuery, dialect: Dialect) -> CompiledQuery:
+
+        params: list[Value] = []
+        q_table: str = dialect.quote_identifier(self.table_name)
+
+        col_parts: list[str] = []
+        if len(self.columns) == 0:
+            col_parts.append("*")
+        else:
+            i: int = 0
+            while i < len(self.columns):
+                c: str = self.columns[i]
+                if c == "*":
+                    col_parts.append("*")
+                else:
+                    col_parts.append(dialect.quote_identifier(c))
+                i = i + 1
+
+        sql: str = "SELECT " + nox.strings.join(col_parts, ", ") + " FROM " + q_table
+
+        # Joins
+        j_idx: int = 0
+        while j_idx < len(self.joins):
+            j: JoinClause = self.joins[j_idx]
+            j_type_str: str = "INNER JOIN "
+            if j.join_type == JOIN_LEFT:
+                j_type_str = "LEFT JOIN "
+            q_target: str = dialect.quote_identifier(j.target_table)
+            q_left: str = q_table + "." + dialect.quote_identifier(j.left_col)
+            q_right: str = q_target + "." + dialect.quote_identifier(j.right_col)
+            sql = sql + " " + j_type_str + q_target + " ON " + q_left + " = " + q_right
+            j_idx = j_idx + 1
+
+        # Where clause
+        if not self.where_clause.is_empty():
+            sql = sql + " WHERE "
+            p_idx: int = 0
+            while p_idx < len(self.where_clause.predicates):
+                pred: Predicate = self.where_clause.predicates[p_idx]
+                log: int = self.where_clause.logics[p_idx]
+                if p_idx > 0:
+                    if log == LOGIC_OR:
+                        sql = sql + " OR "
+                    else:
+                        sql = sql + " AND "
+
+                q_col: str = dialect.quote_identifier(pred.col_name)
+
+                if pred.op == OP_IS_NULL:
+                    sql = sql + q_col + " IS NULL"
+                elif pred.op == OP_IS_NOT_NULL:
+                    sql = sql + q_col + " IS NOT NULL"
+                elif pred.op == OP_IN:
+                    if len(pred.val_list) == 0:
+                        # Empty IN list is safely compiled to false predicate
+                        sql = sql + "1 = 0"
+                    else:
+                        in_placeholders: list[str] = []
+                        k: int = 0
+                        while k < len(pred.val_list):
+                            in_placeholders.append(dialect.placeholder(len(params)))
+                            params.append(pred.val_list[k])
+                            k = k + 1
+                        sql = sql + q_col + " IN (" + nox.strings.join(in_placeholders, ", ") + ")"
+                else:
+                    op_str: str = " = "
+                    if pred.op == OP_NEQ:
+                        op_str = " != "
+                    elif pred.op == OP_GT:
+                        op_str = " > "
+                    elif pred.op == OP_GTE:
+                        op_str = " >= "
+                    elif pred.op == OP_LT:
+                        op_str = " < "
+                    elif pred.op == OP_LTE:
+                        op_str = " <= "
+                    elif pred.op == OP_LIKE:
+                        op_str = " LIKE "
+
+                    placeholder: str = dialect.placeholder(len(params))
+                    params.append(pred.val)
+                    sql = sql + q_col + op_str + placeholder
+
+                p_idx = p_idx + 1
+
+        # Order By
+        if len(self.order_cols) > 0:
+            order_parts: list[str] = []
+            o_idx: int = 0
+            while o_idx < len(self.order_cols):
+                dir_str: str = " ASC"
+                if self.order_dirs[o_idx] == ORDER_DESC:
+                    dir_str = " DESC"
+                order_parts.append(dialect.quote_identifier(self.order_cols[o_idx]) + dir_str)
+                o_idx = o_idx + 1
+            sql = sql + " ORDER BY " + nox.strings.join(order_parts, ", ")
+
+        # Limit / Offset
+        sql = sql + dialect.limit_offset_sql(self.limit_val, self.offset_val)
+
+        return CompiledQuery(sql, params)
+
+def select_all(table_name: str) -> SelectQuery:
+    empty_cols: list[str] = []
+    return SelectQuery(table_name, empty_cols)
+
+def select(table_name: str, columns: list[str]) -> SelectQuery:
+    return SelectQuery(table_name, columns)

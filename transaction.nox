@@ -1,0 +1,76 @@
+# transaction.nox — Explicit transaction lifecycle management and state machine.
+
+import session
+from session import Session
+import dialects
+from dialects import DIALECT_MYSQL
+import errors
+from errors import TransactionError
+import value
+from value import Value
+
+TX_STATE_IDLE: int = 0
+TX_STATE_ACTIVE: int = 1
+TX_STATE_COMMITTED: int = 2
+TX_STATE_ROLLED_BACK: int = 3
+TX_STATE_FAILED: int = 4
+
+class Transaction:
+    session: Session
+    state: int
+
+    def __init__(self: Transaction, session: Session) -> None:
+        self.session = session
+        self.state = TX_STATE_IDLE
+
+    def is_active(self: Transaction) -> bool:
+
+        return self.state == TX_STATE_ACTIVE
+
+    def begin(self: Transaction) -> None:
+
+        if self.state != TX_STATE_IDLE:
+            raise TransactionError("cannot begin transaction: current state is not IDLE (state=" + str(self.state) + ")")
+
+        begin_sql: str = "BEGIN"
+        if self.session.dialect.kind == DIALECT_MYSQL:
+            begin_sql = "START TRANSACTION"
+
+        empty_params: list[Value] = []
+        try:
+            self.session.execute_raw(begin_sql, empty_params)
+            self.state = TX_STATE_ACTIVE
+        except Exception as e:
+            self.state = TX_STATE_FAILED
+            raise TransactionError("failed to begin transaction: " + e.message)
+
+    def commit(self: Transaction) -> None:
+
+        if self.state != TX_STATE_ACTIVE:
+            raise TransactionError("cannot commit transaction: transaction is not active (state=" + str(self.state) + ")")
+
+        empty_params: list[Value] = []
+        try:
+            self.session.execute_raw("COMMIT", empty_params)
+            self.state = TX_STATE_COMMITTED
+        except Exception as e:
+            self.state = TX_STATE_FAILED
+            raise TransactionError("failed to commit transaction: " + e.message)
+
+    def rollback(self: Transaction) -> None:
+
+        if self.state != TX_STATE_ACTIVE and self.state != TX_STATE_FAILED:
+            raise TransactionError("cannot rollback transaction: transaction is not active or failed (state=" + str(self.state) + ")")
+
+        empty_params: list[Value] = []
+        try:
+            self.session.execute_raw("ROLLBACK", empty_params)
+            self.state = TX_STATE_ROLLED_BACK
+        except Exception as e:
+            self.state = TX_STATE_FAILED
+            raise TransactionError("failed to rollback transaction: " + e.message)
+
+def begin_transaction(s: Session) -> Transaction:
+    tx: Transaction = Transaction(s)
+    tx.begin()
+    return tx

@@ -1,0 +1,57 @@
+# tests/integration/pool_test.nox — Integration tests for connection pool.
+
+import nox.test
+import feather
+from feather import ConnectionPool, Session, create_sqlite_pool
+import errors
+from errors import PoolError
+
+# Create pool with capacity 3
+cp: ConnectionPool = create_sqlite_pool(":memory:", 3)
+nox.test.assert_eq_int(cp.in_use_count(), 0, "Initial in_use_count is 0")
+nox.test.assert_eq_int(cp.idle_count(), 0, "Initial idle_count is 0")
+
+# 1. Acquire connection
+s1: Session = cp.acquire()
+nox.test.assert_eq_int(cp.in_use_count(), 1, "in_use_count is 1 after acquire")
+nox.test.assert_true(not s1.is_closed, "Acquired session is open")
+
+# Execute a query on s1
+s1.execute_raw("CREATE TABLE test (n INT)", [])
+s1.execute_raw("INSERT INTO test VALUES (42)", [])
+
+# 2. Release connection
+cp.release_connection(s1)
+nox.test.assert_eq_int(cp.in_use_count(), 0, "in_use_count is 0 after release")
+nox.test.assert_eq_int(cp.idle_count(), 1, "idle_count is 1 after release")
+
+# 3. Re-acquire from idle pool
+s1_again: Session = cp.acquire()
+nox.test.assert_eq_int(cp.in_use_count(), 1, "in_use_count is 1 after re-acquire")
+nox.test.assert_eq_int(cp.idle_count(), 0, "idle_count is 0 after re-acquire from idle")
+
+# 4. Acquire up to limit
+s2: Session = cp.acquire()
+s3: Session = cp.acquire()
+nox.test.assert_eq_int(cp.in_use_count(), 3, "in_use_count reached limit of 3")
+
+# 5. Exceeding capacity raises PoolError
+exhausted: bool = False
+try:
+    s4: Session = cp.acquire()
+except PoolError as e:
+    exhausted = True
+nox.test.assert_true(exhausted, "Acquiring beyond max_connections raises PoolError")
+
+# 6. Release and cleanup
+cp.release_connection(s1_again)
+cp.release_connection(s2)
+cp.release_connection(s3)
+nox.test.assert_eq_int(cp.in_use_count(), 0, "All sessions released")
+nox.test.assert_eq_int(cp.idle_count(), 3, "Idle count is 3")
+
+cp.close_all()
+nox.test.assert_eq_int(cp.idle_count(), 0, "Idle list cleared after close_all")
+nox.test.assert_true(cp.is_closed, "Pool is closed")
+
+print("pool_test passed")

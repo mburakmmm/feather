@@ -1,0 +1,51 @@
+# examples/relations.nox — Relationship definitions and eager loading.
+
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, col_int, col_str, table, open_sqlite_memory, row_get_int, row_get_str, Relation, RelationLoader, has_many, belongs_to
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Post:
+    id: int
+    title: str
+    user_id: int
+
+    def __init__(self: Post, id: int, title: str, user_id: int) -> None:
+        self.id = id
+        self.title = title
+        self.user_id = user_id
+
+def decode_post(r: Row) -> Post:
+    return Post(row_get_int(r, 0), row_get_str(r, 1), row_get_int(r, 2))
+
+def encode_post(p: Post) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(p.id)
+    d["title"] = val_str(p.title)
+    d["user_id"] = val_int(p.user_id)
+    return d
+
+def run() -> None:
+    s: Session = open_sqlite_memory()
+    post_tbl: Table = table("posts", [col_int("id", True, False, True), col_str("title"), col_int("user_id")])
+    post_model: Model[Post] = Model[Post](post_tbl, decode_post, encode_post)
+    s.create_table(post_tbl)
+
+    s.insert(post_tbl, {"title": val_str("Introduction to Nox"), "user_id": val_int(1)})
+    s.insert(post_tbl, {"title": val_str("Building Feather ORM"), "user_id": val_int(1)})
+    s.insert(post_tbl, {"title": val_str("Nox standard library overview"), "user_id": val_int(2)})
+
+    loader: RelationLoader = RelationLoader(s)
+    user1_posts: list[Post] = loader.load_has_many[Post](post_model, "user_id", val_int(1))
+
+    print("Posts by User 1:")
+    i: int = 0
+    while i < len(user1_posts):
+        print("  - " + user1_posts[i].title)
+        i = i + 1
+
+    s.close()
+
+run()

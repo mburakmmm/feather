@@ -1,0 +1,109 @@
+# tests/integration/sqlite_crud_test.nox — Integration tests for SQLite CRUD operations.
+
+import nox.test
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, val_float, val_bool, val_null, col_int, col_str, col_bool, table, select_all, SelectQuery, eq, gt, open_sqlite_memory, row_get_int, row_get_str, row_get_bool
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Article:
+    id: int
+    title: str
+    views: int
+    is_published: bool
+
+    def __init__(self: Article, id: int, title: str, views: int, is_published: bool) -> None:
+        self.id = id
+        self.title = title
+        self.views = views
+        self.is_published = is_published
+
+def decode_article(r: Row) -> Article:
+    return Article(row_get_int(r, 0), row_get_str(r, 1), row_get_int(r, 2), row_get_bool(r, 3))
+
+def encode_article(a: Article) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(a.id)
+    d["title"] = val_str(a.title)
+    d["views"] = val_int(a.views)
+    d["is_published"] = val_bool(a.is_published)
+    return d
+
+s: Session = open_sqlite_memory()
+
+# 1. Create table
+cols: list[Column] = [col_int("id", True, False, True), col_str("title"), col_int("views"), col_bool("is_published")]
+t: Table = table("articles", cols)
+m: Model[Article] = Model[Article](t, decode_article, encode_article)
+s.create_table(t)
+
+# 2. Insert records
+a1: dict[str, Value] = {}
+a1["title"] = val_str("First Post")
+a1["views"] = val_int(100)
+a1["is_published"] = val_bool(True)
+id1: int = s.insert(t, a1)
+nox.test.assert_eq_int(id1, 1, "First inserted ID is 1")
+
+a2: dict[str, Value] = {}
+a2["title"] = val_str("Draft Post")
+a2["views"] = val_int(5)
+a2["is_published"] = val_bool(False)
+id2: int = s.insert(t, a2)
+nox.test.assert_eq_int(id2, 2, "Second inserted ID is 2")
+
+a3: dict[str, Value] = {}
+a3["title"] = val_str("Trending Post")
+a3["views"] = val_int(500)
+a3["is_published"] = val_bool(True)
+id3: int = s.insert(t, a3)
+nox.test.assert_eq_int(id3, 3, "Third inserted ID is 3")
+
+# 3. Read / Find
+all_articles: list[Article] = s.find_all[Article](m)
+nox.test.assert_eq_int(len(all_articles), 3, "Total articles count is 3")
+
+fetched1: Article | None = s.find_by_id[Article](m, val_int(1))
+nox.test.assert_true(fetched1 is not None, "Article 1 found")
+if fetched1 is not None:
+    nox.test.assert_eq_str(fetched1.title, "First Post", "Fetched article 1 title matches")
+    nox.test.assert_eq_int(fetched1.views, 100, "Fetched article 1 views match")
+
+missing: Article | None = s.find_by_id[Article](m, val_int(999))
+nox.test.assert_true(missing is None, "Non-existent ID returns None")
+
+# 4. Filter Query (views > 50 AND is_published = true)
+q: SelectQuery = select_all("articles").where(gt("views", val_int(50))).and_where(eq("is_published", val_bool(True)))
+popular: list[Article] = s.execute_query[Article](m, q)
+nox.test.assert_eq_int(len(popular), 2, "Two popular published articles found")
+
+# 5. Update by ID
+up_vals: dict[str, Value] = {}
+up_vals["views"] = val_int(150)
+affected_up: int = s.update_by_id(t, val_int(1), up_vals)
+nox.test.assert_eq_int(affected_up, 1, "One row affected by update")
+
+updated1: Article | None = s.find_by_id[Article](m, val_int(1))
+if updated1 is not None:
+    nox.test.assert_eq_int(updated1.views, 150, "Views updated to 150")
+
+# 6. Count
+c_all: int = s.count(t)
+nox.test.assert_eq_int(c_all, 3, "Total count is 3")
+
+# 7. Delete by ID
+affected_del: int = s.delete_by_id(t, val_int(2))
+nox.test.assert_eq_int(affected_del, 1, "One row deleted")
+nox.test.assert_eq_int(s.count(t), 2, "Count after delete is 2")
+
+# 8. Raw SQL execution
+raw_aff: int = s.execute_raw("UPDATE \"articles\" SET \"views\" = ? WHERE \"id\" = ?", [val_int(999), val_int(1)])
+nox.test.assert_eq_int(raw_aff, 1, "Raw SQL update executed")
+raw_rows: list[Row] = s.query_raw("SELECT \"views\" FROM \"articles\" WHERE \"id\" = ?", [val_int(1)])
+nox.test.assert_eq_int(len(raw_rows), 1, "Raw SQL query returned 1 row")
+nox.test.assert_eq_int(raw_rows[0].get_int(0), 999, "Raw SQL read back value 999")
+
+s.close()
+print("sqlite_crud_test passed")

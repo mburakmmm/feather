@@ -1,0 +1,57 @@
+# tests/unit/dialects_test.nox — Unit tests for SQLite, PostgreSQL, and MySQL dialect generation.
+
+import nox.test
+import dialects
+from dialects import Dialect, sqlite_dialect, postgres_dialect, mysql_dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
+import metadata
+from metadata import Column, Table, col_int, col_str, col_float, col_bool, table
+
+d_sqlite: Dialect = sqlite_dialect()
+d_pg: Dialect = postgres_dialect()
+d_my: Dialect = mysql_dialect()
+
+# 1. Identifier Quoting
+nox.test.assert_eq_str(d_sqlite.quote_identifier("users"), "\"users\"", "SQLite quotes with double quotes")
+nox.test.assert_eq_str(d_pg.quote_identifier("users"), "\"users\"", "PostgreSQL quotes with double quotes")
+nox.test.assert_eq_str(d_my.quote_identifier("users"), "`users`", "MySQL quotes with backticks")
+
+# 2. Parameter Placeholders
+nox.test.assert_eq_str(d_sqlite.placeholder(0), "?", "SQLite placeholder is ?")
+nox.test.assert_eq_str(d_sqlite.placeholder(3), "?", "SQLite placeholder is ?")
+nox.test.assert_eq_str(d_my.placeholder(0), "?", "MySQL placeholder is ?")
+
+nox.test.assert_eq_str(d_pg.placeholder(0), "$1", "PostgreSQL first placeholder is $1")
+nox.test.assert_eq_str(d_pg.placeholder(1), "$2", "PostgreSQL second placeholder is $2")
+nox.test.assert_eq_str(d_pg.placeholder(9), "$10", "PostgreSQL 10th placeholder is $10")
+
+# 3. Column Types and DDL
+c_pk_auto: Column = col_int("id", True, False, True)
+c_text: Column = col_str("name")
+c_bool: Column = col_bool("is_admin")
+t: Table = table("users", [c_pk_auto, c_text, c_bool])
+
+# SQLite DDL
+sql_lite: str = d_sqlite.create_table_sql(t)
+nox.test.assert_true("INTEGER PRIMARY KEY AUTOINCREMENT" in sql_lite, "SQLite auto PK is INTEGER PRIMARY KEY AUTOINCREMENT")
+nox.test.assert_true("\"name\" TEXT NOT NULL" in sql_lite, "SQLite text column NOT NULL")
+
+# PostgreSQL DDL
+sql_pg: str = d_pg.create_table_sql(t)
+nox.test.assert_true("SERIAL PRIMARY KEY" in sql_pg, "PostgreSQL auto PK is SERIAL PRIMARY KEY")
+nox.test.assert_true("\"is_admin\" BOOLEAN NOT NULL" in sql_pg, "PostgreSQL boolean type is BOOLEAN")
+
+# MySQL DDL
+sql_my: str = d_my.create_table_sql(t)
+nox.test.assert_true("INT AUTO_INCREMENT PRIMARY KEY" in sql_my, "MySQL auto PK is INT AUTO_INCREMENT PRIMARY KEY")
+nox.test.assert_true("`is_admin` TINYINT(1) NOT NULL" in sql_my, "MySQL boolean type is TINYINT(1)")
+
+# 4. Limit and Offset
+nox.test.assert_eq_str(d_sqlite.limit_offset_sql(10, 20), " LIMIT 10 OFFSET 20", "Limit and offset formatting")
+nox.test.assert_eq_str(d_sqlite.limit_offset_sql(10, -1), " LIMIT 10", "Limit only formatting")
+
+# 5. RETURNING support
+nox.test.assert_true(d_pg.supports_returning(), "PostgreSQL supports RETURNING")
+nox.test.assert_true(not d_sqlite.supports_returning(), "SQLite does not rely on RETURNING")
+nox.test.assert_true(not d_my.supports_returning(), "MySQL does not rely on RETURNING")
+
+print("dialects_test passed")

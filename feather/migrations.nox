@@ -1,0 +1,2 @@
+import migrations
+from migrations import Migration, MigrationManager, migration

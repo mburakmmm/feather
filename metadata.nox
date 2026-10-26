@@ -1,0 +1,122 @@
+# metadata.nox — Schema definitions, column metadata, and identifier validation.
+
+import errors
+from errors import IdentifierError, QueryBuildError
+import value
+from value import Value, val_int, val_str, val_float, val_bool, val_null
+
+TYPE_INTEGER: int = 1
+TYPE_TEXT: int = 2
+TYPE_REAL: int = 3
+TYPE_BOOLEAN: int = 4
+
+def _is_alpha(c: str) -> bool:
+    return c >= "a" and c <= "z" or c >= "A" and c <= "Z" or c == "_"
+
+def _is_alnum(c: str) -> bool:
+    return _is_alpha(c) or c >= "0" and c <= "9"
+
+# Validates that an SQL identifier contains only alphanumeric ASCII characters and underscores
+def validate_identifier(name: str) -> bool:
+    if len(name) == 0:
+        return False
+    if not _is_alpha(name[0]):
+        return False
+    i: int = 1
+    while i < len(name):
+        if not _is_alnum(name[i]):
+            return False
+        i = i + 1
+    return True
+
+def assert_valid_identifier(name: str, kind: str) -> None:
+    if not validate_identifier(name):
+        raise IdentifierError("invalid " + kind + " identifier: \"" + name + "\" (must be [a-zA-Z_][a-zA-Z0-9_]*)")
+
+class Column:
+    name: str
+    data_type: int
+    is_primary_key: bool
+    is_nullable: bool
+    is_auto_increment: bool
+    is_unique: bool
+    default_val: Value | None
+
+    def __init__(self: Column, name: str, data_type: int, is_primary_key: bool, is_nullable: bool, is_auto_increment: bool, is_unique: bool, default_val: Value | None) -> None:
+        assert_valid_identifier(name, "column")
+        self.name = name
+        self.data_type = data_type
+        self.is_primary_key = is_primary_key
+        self.is_nullable = is_nullable
+        self.is_auto_increment = is_auto_increment
+        self.is_unique = is_unique
+        self.default_val = default_val
+
+def col_int(name: str, is_pk: bool = False, is_null: bool = False, is_auto: bool = False) -> Column:
+    return Column(name, TYPE_INTEGER, is_pk, is_null, is_auto, False, None)
+
+def col_str(name: str, is_null: bool = False, is_unique: bool = False) -> Column:
+    return Column(name, TYPE_TEXT, False, is_null, False, is_unique, None)
+
+def col_float(name: str, is_null: bool = False) -> Column:
+    return Column(name, TYPE_REAL, False, is_null, False, False, None)
+
+def col_bool(name: str, is_null: bool = False) -> Column:
+    return Column(name, TYPE_BOOLEAN, False, is_null, False, False, None)
+
+class Table:
+    name: str
+    columns: list[Column]
+    primary_key: str
+
+    def __init__(self: Table, name: str, columns: list[Column], primary_key: str) -> None:
+        self.name = name
+        self.columns = columns
+        self.primary_key = primary_key
+
+    def get_column(self: Table, col_name: str) -> Column | None:
+
+        i: int = 0
+        while i < len(self.columns):
+            if self.columns[i].name == col_name:
+                return self.columns[i]
+            i = i + 1
+        return None
+
+    def has_column(self: Table, col_name: str) -> bool:
+
+        col: Column | None = self.get_column(col_name)
+        return col is not None
+
+    def column_names(self: Table) -> list[str]:
+
+        names: list[str] = []
+        i: int = 0
+        while i < len(self.columns):
+            names.append(self.columns[i].name)
+            i = i + 1
+        return names
+
+def table(name: str, columns: list[Column]) -> Table:
+    assert_valid_identifier(name, "table")
+    if len(columns) == 0:
+        raise QueryBuildError("table \"" + name + "\" must declare at least one column")
+
+    pk_name: str = ""
+    seen: list[str] = []
+    i: int = 0
+    while i < len(columns):
+        col: Column = columns[i]
+        j: int = 0
+        while j < len(seen):
+            if seen[j] == col.name:
+                raise QueryBuildError("duplicate column \"" + col.name + "\" in table \"" + name + "\"")
+            j = j + 1
+        seen.append(col.name)
+        if col.is_primary_key:
+            if pk_name != "":
+                raise QueryBuildError("multiple primary keys declared on table \"" + name + "\": " + pk_name + " and " + col.name)
+            pk_name = col.name
+        i = i + 1
+
+    return Table(name, columns, pk_name)

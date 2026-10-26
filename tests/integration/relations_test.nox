@@ -1,0 +1,132 @@
+# tests/integration/relations_test.nox — Integration tests for relations and eager loading.
+
+import nox.test
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, col_int, col_str, table, open_sqlite_memory, row_get_int, row_get_str, Relation, RelationLoader, has_many, belongs_to, has_one
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Author:
+    id: int
+    name: str
+
+    def __init__(self: Author, id: int, name: str) -> None:
+        self.id = id
+        self.name = name
+
+def decode_author(r: Row) -> Author:
+    return Author(row_get_int(r, 0), row_get_str(r, 1))
+
+def encode_author(a: Author) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(a.id)
+    d["name"] = val_str(a.name)
+    return d
+
+class Book:
+    id: int
+    title: str
+    author_id: int
+
+    def __init__(self: Book, id: int, title: str, author_id: int) -> None:
+        self.id = id
+        self.title = title
+        self.author_id = author_id
+
+def decode_book(r: Row) -> Book:
+    return Book(row_get_int(r, 0), row_get_str(r, 1), row_get_int(r, 2))
+
+def encode_book(b: Book) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(b.id)
+    d["title"] = val_str(b.title)
+    d["author_id"] = val_int(b.author_id)
+    return d
+
+class Profile:
+    id: int
+    author_id: int
+    bio: str
+
+    def __init__(self: Profile, id: int, author_id: int, bio: str) -> None:
+        self.id = id
+        self.author_id = author_id
+        self.bio = bio
+
+def decode_profile(r: Row) -> Profile:
+    return Profile(row_get_int(r, 0), row_get_int(r, 1), row_get_str(r, 2))
+
+def encode_profile(p: Profile) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(p.id)
+    d["author_id"] = val_int(p.author_id)
+    d["bio"] = val_str(p.bio)
+    return d
+
+s: Session = open_sqlite_memory()
+
+# 1. Setup tables
+author_tbl: Table = table("authors", [col_int("id", True, False, True), col_str("name")])
+author_model: Model[Author] = Model[Author](author_tbl, decode_author, encode_author)
+s.create_table(author_tbl)
+
+book_tbl: Table = table("books", [col_int("id", True, False, True), col_str("title"), col_int("author_id")])
+book_model: Model[Book] = Model[Book](book_tbl, decode_book, encode_book)
+s.create_table(book_tbl)
+
+profile_tbl: Table = table("profiles", [col_int("id", True, False, True), col_int("author_id"), col_str("bio")])
+profile_model: Model[Profile] = Model[Profile](profile_tbl, decode_profile, encode_profile)
+s.create_table(profile_tbl)
+
+# 2. Insert data
+a1_id: int = s.insert(author_tbl, {"name": val_str("J.K. Rowling")})
+a2_id: int = s.insert(author_tbl, {"name": val_str("George Orwell")})
+
+s.insert(book_tbl, {"title": val_str("Harry Potter 1"), "author_id": val_int(a1_id)})
+s.insert(book_tbl, {"title": val_str("Harry Potter 2"), "author_id": val_int(a1_id)})
+s.insert(book_tbl, {"title": val_str("1984"), "author_id": val_int(a2_id)})
+
+s.insert(profile_tbl, {"author_id": val_int(a1_id), "bio": val_str("British author and philanthropist")})
+
+# 3. Test Relation metadata definitions
+rel_books: Relation = has_many("books", "authors", "books", "author_id", "id")
+nox.test.assert_eq_str(rel_books.name, "books", "Relation name is books")
+nox.test.assert_eq_str(rel_books.foreign_key, "author_id", "Foreign key is author_id")
+
+rel_author: Relation = belongs_to("author", "books", "authors", "author_id", "id")
+nox.test.assert_eq_str(rel_author.target_table, "authors", "Target table is authors")
+
+rel_profile: Relation = has_one("profile", "authors", "profiles", "author_id", "id")
+nox.test.assert_eq_str(rel_profile.name, "profile", "Profile relation name is profile")
+
+# 4. Test RelationLoader (load_has_many)
+loader: RelationLoader = RelationLoader(s)
+a1_books: list[Book] = loader.load_has_many[Book](book_model, "author_id", val_int(a1_id))
+nox.test.assert_eq_int(len(a1_books), 2, "Author 1 has 2 books loaded via has_many")
+nox.test.assert_eq_str(a1_books[0].title, "Harry Potter 1", "Book 1 title matches")
+nox.test.assert_eq_str(a1_books[1].title, "Harry Potter 2", "Book 2 title matches")
+
+a2_books: list[Book] = loader.load_has_many[Book](book_model, "author_id", val_int(a2_id))
+nox.test.assert_eq_int(len(a2_books), 1, "Author 2 has 1 book loaded via has_many")
+nox.test.assert_eq_str(a2_books[0].title, "1984", "Book title is 1984")
+
+# 5. Test RelationLoader (load_belongs_to)
+b1: Book = a1_books[0]
+b1_author: Author | None = loader.load_belongs_to[Author](author_model, "id", val_int(b1.author_id))
+nox.test.assert_true(b1_author is not None, "Book 1 author found via belongs_to")
+if b1_author is not None:
+    nox.test.assert_eq_str(b1_author.name, "J.K. Rowling", "Belongs_to resolved author name")
+
+# 6. Test RelationLoader (load_has_one)
+prof: Profile | None = loader.load_has_one[Profile](profile_model, "author_id", val_int(a1_id))
+nox.test.assert_true(prof is not None, "Author 1 profile found via has_one")
+if prof is not None:
+    nox.test.assert_eq_str(prof.bio, "British author and philanthropist", "Bio matches")
+
+no_prof: Profile | None = loader.load_has_one[Profile](profile_model, "author_id", val_int(a2_id))
+nox.test.assert_true(no_prof is None, "Author 2 has no profile, returns None")
+
+s.close()
+print("relations_test passed")

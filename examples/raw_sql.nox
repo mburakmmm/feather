@@ -1,0 +1,30 @@
+# examples/raw_sql.nox — Parameterized raw SQL queries and escape hatch.
+
+import feather
+from feather import Session, Value, val_int, val_str, open_sqlite_memory
+import nox.db
+from nox.db import Row
+
+def run() -> None:
+    s: Session = open_sqlite_memory()
+
+    # DDL
+    s.execute_raw("CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT, msg TEXT)", [])
+
+    # Parameterized insert
+    s.execute_raw("INSERT INTO logs (level, msg) VALUES (?, ?)", [val_str("INFO"), val_str("Application initialized")])
+    s.execute_raw("INSERT INTO logs (level, msg) VALUES (?, ?)", [val_str("WARN"), val_str("High memory pressure")])
+    s.execute_raw("INSERT INTO logs (level, msg) VALUES (?, ?)", [val_str("INFO"), val_str("Cache warm")])
+
+    # Parameterized query
+    rows: list[Row] = s.query_raw("SELECT id, level, msg FROM logs WHERE level = ? ORDER BY id ASC", [val_str("INFO")])
+    print("Found " + str(len(rows)) + " INFO log entries:")
+    i: int = 0
+    while i < len(rows):
+        r: Row = rows[i]
+        print("  [" + str(r.get_int(0)) + "] " + r.get_str(1) + ": " + r.get_str(2))
+        i = i + 1
+
+    s.close()
+
+run()

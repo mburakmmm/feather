@@ -1,0 +1,71 @@
+# tests/unit/query_test.nox — Unit tests for the Feather query builder and AST.
+
+import nox.test
+import query
+from query import SelectQuery, CompiledQuery, select, select_all, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, ORDER_ASC, ORDER_DESC
+import value
+from value import Value, val_int, val_str, val_bool
+import dialects
+from dialects import sqlite_dialect, postgres_dialect, mysql_dialect, Dialect
+
+d_lite: Dialect = sqlite_dialect()
+d_pg: Dialect = postgres_dialect()
+
+# 1. Simple Select All
+q1: SelectQuery = select_all("users")
+c1: CompiledQuery = q1.compile(d_lite)
+nox.test.assert_eq_str(c1.sql, "SELECT * FROM \"users\"", "Compiled select all")
+nox.test.assert_eq_int(len(c1.params), 0, "No params for select all")
+
+# 2. Select specific columns
+q2: SelectQuery = select("users", ["id", "name", "email"])
+c2: CompiledQuery = q2.compile(d_lite)
+nox.test.assert_eq_str(c2.sql, "SELECT \"id\", \"name\", \"email\" FROM \"users\"", "Compiled select specific columns")
+
+# 3. Where Predicates and Parameter Binding
+q3: SelectQuery = select_all("users").where(eq("status", val_str("active"))).and_where(gt("age", val_int(18)))
+c3_lite: CompiledQuery = q3.compile(d_lite)
+nox.test.assert_eq_str(c3_lite.sql, "SELECT * FROM \"users\" WHERE \"status\" = ? AND \"age\" > ?", "SQLite where clause with ? placeholders")
+nox.test.assert_eq_int(len(c3_lite.params), 2, "Two bound parameters")
+nox.test.assert_eq_str(c3_lite.params[0].to_string(), "active", "First parameter is active")
+nox.test.assert_eq_str(c3_lite.params[1].to_string(), "18", "Second parameter is 18")
+
+# PostgreSQL placeholder compilation
+c3_pg: CompiledQuery = q3.compile(d_pg)
+nox.test.assert_eq_str(c3_pg.sql, "SELECT * FROM \"users\" WHERE \"status\" = $1 AND \"age\" > $2", "PostgreSQL where clause with $1, $2 placeholders")
+
+# 4. OR logic
+q4: SelectQuery = select_all("items").where(eq("category", val_str("books"))).or_where(eq("category", val_str("music")))
+c4: CompiledQuery = q4.compile(d_lite)
+nox.test.assert_eq_str(c4.sql, "SELECT * FROM \"items\" WHERE \"category\" = ? OR \"category\" = ?", "OR logic compilation")
+
+# 5. NULL predicates
+q5: SelectQuery = select_all("users").where(is_null("deleted_at")).and_where(is_not_null("confirmed_at"))
+c5: CompiledQuery = q5.compile(d_lite)
+nox.test.assert_eq_str(c5.sql, "SELECT * FROM \"users\" WHERE \"deleted_at\" IS NULL AND \"confirmed_at\" IS NOT NULL", "NULL checks compile without parameters")
+nox.test.assert_eq_int(len(c5.params), 0, "No parameters for IS NULL checks")
+
+# 6. IN predicate with elements
+q6: SelectQuery = select_all("orders").where(is_in("status", [val_str("pending"), val_str("processing")]))
+c6: CompiledQuery = q6.compile(d_lite)
+nox.test.assert_eq_str(c6.sql, "SELECT * FROM \"orders\" WHERE \"status\" IN (?, ?)", "IN clause with multiple values")
+nox.test.assert_eq_int(len(c6.params), 2, "IN parameters count")
+
+# IN predicate with empty list (safe false invariant: 1 = 0)
+empty_vals: list[Value] = []
+q6_empty: SelectQuery = select_all("orders").where(is_in("status", empty_vals))
+c6_empty: CompiledQuery = q6_empty.compile(d_lite)
+nox.test.assert_eq_str(c6_empty.sql, "SELECT * FROM \"orders\" WHERE 1 = 0", "Empty IN list compiles to safe false predicate 1 = 0")
+nox.test.assert_eq_int(len(c6_empty.params), 0, "Empty IN list produces 0 parameters")
+
+# 7. Order By, Limit, Offset
+q7: SelectQuery = select_all("users").order_by("created_at", ORDER_DESC).limit(20).offset(40)
+c7: CompiledQuery = q7.compile(d_lite)
+nox.test.assert_eq_str(c7.sql, "SELECT * FROM \"users\" ORDER BY \"created_at\" DESC LIMIT 20 OFFSET 40", "Order By, Limit and Offset compilation")
+
+# 8. Joins
+q8: SelectQuery = select_all("users").inner_join("profiles", "id", "user_id")
+c8: CompiledQuery = q8.compile(d_lite)
+nox.test.assert_eq_str(c8.sql, "SELECT * FROM \"users\" INNER JOIN \"profiles\" ON \"users\".\"id\" = \"profiles\".\"user_id\"", "Inner join compilation")
+
+print("query_test passed")

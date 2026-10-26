@@ -1,0 +1,105 @@
+# values.nox — Type-safe parameter representation and statement binding for Feather.
+
+import nox.db
+from nox.db import Statement
+import errors
+from errors import BindingError
+
+VAL_INT: int = 1
+VAL_FLOAT: int = 2
+VAL_STR: int = 3
+VAL_BOOL: int = 4
+VAL_NULL: int = 5
+
+class Value:
+    kind: int
+    i: int
+    f: float
+    s: str
+    b: bool
+    is_null: bool
+
+    def __init__(self: Value, kind: int, i: int, f: float, s: str, b: bool, is_null: bool) -> None:
+        self.kind = kind
+        self.i = i
+        self.f = f
+        self.s = s
+        self.b = b
+        self.is_null = is_null
+
+    def to_string(self: Value) -> str:
+
+        if self.kind == VAL_INT:
+            return str(self.i)
+        if self.kind == VAL_FLOAT:
+            return str(self.f)
+        if self.kind == VAL_STR:
+            return self.s
+        if self.kind == VAL_BOOL:
+            if self.b:
+                return "true"
+            return "false"
+        return "NULL"
+
+    def equals(self: Value, other: Value) -> bool:
+
+        if self.kind != other.kind:
+            return False
+        if self.kind == VAL_INT:
+            return self.i == other.i
+        if self.kind == VAL_FLOAT:
+            return self.f == other.f
+        if self.kind == VAL_STR:
+            return self.s == other.s
+        if self.kind == VAL_BOOL:
+            return self.b == other.b
+        if self.kind == VAL_NULL:
+            return True
+        return False
+
+def val_int(i: int) -> Value:
+    return Value(VAL_INT, i, 0.0, "", False, False)
+
+def val_float(f: float) -> Value:
+    return Value(VAL_FLOAT, 0, f, "", False, False)
+
+def val_str(s: str) -> Value:
+    return Value(VAL_STR, 0, 0.0, s, False, False)
+
+def val_bool(b: bool) -> Value:
+    return Value(VAL_BOOL, 0, 0.0, "", b, False)
+
+def val_null() -> Value:
+    return Value(VAL_NULL, 0, 0.0, "", False, True)
+
+def bind_value(stmt: Statement, idx: int, v: Value) -> None:
+    if v.kind == VAL_INT:
+        stmt.bind_int(idx, v.i)
+    elif v.kind == VAL_FLOAT:
+        stmt.bind_float(idx, v.f)
+    elif v.kind == VAL_STR:
+        stmt.bind_str(idx, v.s)
+    elif v.kind == VAL_BOOL:
+        int_val: int = 0
+        if v.b:
+            int_val = 1
+        stmt.bind_int(idx, int_val)
+    elif v.kind == VAL_NULL:
+        stmt.bind_null(idx)
+    else:
+        raise BindingError("unsupported value kind: " + str(v.kind))
+
+def format_bound_values(params: list[Value]) -> str:
+    parts: list[str] = []
+    i: int = 0
+    while i < len(params):
+        parts.append(params[i].to_string())
+        i = i + 1
+    out: str = "["
+    j: int = 0
+    while j < len(parts):
+        if j > 0:
+            out = out + ", "
+        out = out + parts[j]
+        j = j + 1
+    return out + "]"

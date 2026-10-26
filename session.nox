@@ -1,0 +1,403 @@
+# session.nox — Unit of work, database connection wrapper, and CRUD operations for Feather.
+
+import nox.db
+from nox.db import DbConnection, Row, Statement
+import metadata
+from metadata import Table, Column
+import value
+from value import Value, val_int, val_str, val_float, val_bool, val_null, bind_value
+import dialects
+from dialects import Dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
+import query
+from query import SelectQuery, WhereClause, Predicate, CompiledQuery, eq, select, select_all, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, LOGIC_OR
+import mapper
+from mapper import Model
+import errors
+from errors import ConnectionError, QueryBuildError, FeatherError
+import nox.strings
+
+class FeatherConn:
+    prepare_fn: (str) -> Statement
+    execute_fn: (str) -> int
+    query_fn: (str) -> list[Row]
+    close_fn: () -> None
+
+    def __init__(self, prepare_fn: (str) -> Statement, execute_fn: (str) -> int, query_fn: (str) -> list[Row], close_fn: () -> None) -> None:
+        self.prepare_fn = prepare_fn
+        self.execute_fn = execute_fn
+        self.query_fn = query_fn
+        self.close_fn = close_fn
+
+    def prepare(self, sql: str) -> Statement:
+
+        f: (str) -> Statement = self.prepare_fn
+        return f(sql)
+
+    def execute(self, sql: str) -> int:
+
+        f: (str) -> int = self.execute_fn
+        return f(sql)
+
+    def query(self, sql: str) -> list[Row]:
+
+        f: (str) -> list[Row] = self.query_fn
+        return f(sql)
+
+    def close(self) -> None:
+
+        f: () -> None = self.close_fn
+        f()
+
+def wrap_db_connection(conn: DbConnection) -> FeatherConn:
+    def _prep(sql: str) -> Statement:
+        return conn.prepare(sql)
+    def _exec(sql: str) -> int:
+        return conn.execute(sql)
+    def _query(sql: str) -> list[Row]:
+        return conn.query(sql)
+    def _close() -> None:
+        conn.close()
+    return FeatherConn(_prep, _exec, _query, _close)
+
+class Session:
+    conn: FeatherConn
+    dialect: Dialect
+    owns_conn: bool
+    is_closed: bool
+
+    def __init__(self, conn: FeatherConn, dialect: Dialect, owns_conn: bool = True) -> None:
+        self.conn = conn
+        self.dialect = dialect
+        self.owns_conn = owns_conn
+        self.is_closed = False
+
+    def _ensure_open(self) -> None:
+
+        if self.is_closed:
+            raise ConnectionError("cannot execute operation on a closed Session")
+
+    def create_table(self, tbl: Table) -> None:
+
+        self._ensure_open()
+        sql: str = self.dialect.create_table_sql(tbl)
+        self.conn.execute(sql)
+
+    def drop_table(self, tbl: Table) -> None:
+
+        self._ensure_open()
+        sql: str = self.dialect.drop_table_sql(tbl)
+        self.conn.execute(sql)
+
+    def execute_raw(self, sql: str, params: list[Value]) -> int:
+
+        self._ensure_open()
+        stmt: Statement = self.conn.prepare(sql)
+        i: int = 0
+        while i < len(params):
+            bind_value(stmt, i, params[i])
+            i = i + 1
+        return stmt.execute()
+
+    def query_raw(self, sql: str, params: list[Value]) -> list[Row]:
+
+        self._ensure_open()
+        stmt: Statement = self.conn.prepare(sql)
+        i: int = 0
+        while i < len(params):
+            bind_value(stmt, i, params[i])
+            i = i + 1
+        return stmt.query()
+
+    def insert(self, tbl: Table, values_dict: dict[str, Value]) -> int:
+
+        self._ensure_open()
+        col_names: list[str] = []
+        placeholders: list[str] = []
+        bound_vals: list[Value] = []
+
+        i: int = 0
+        while i < len(tbl.columns):
+            col: Column = tbl.columns[i]
+            if values_dict.contains(col.name):
+                col_names.append(self.dialect.quote_identifier(col.name))
+                placeholders.append(self.dialect.placeholder(len(bound_vals)))
+                bound_vals.append(values_dict[col.name])
+            i = i + 1
+
+        if len(col_names) == 0:
+            raise QueryBuildError("insert requires at least one column value")
+
+        q_table: str = self.dialect.quote_identifier(tbl.name)
+        sql: str = "INSERT INTO " + q_table + " (" + nox.strings.join(col_names, ", ") + ") VALUES (" + nox.strings.join(placeholders, ", ") + ")"
+
+        # PostgreSQL returning ID support
+        if self.dialect.supports_returning() and tbl.primary_key != "":
+            sql = sql + " RETURNING " + self.dialect.quote_identifier(tbl.primary_key)
+            rows: list[Row] = self.query_raw(sql, bound_vals)
+            if len(rows) > 0:
+                return rows[0].get_int(0)
+            return 0
+
+        affected: int = self.execute_raw(sql, bound_vals)
+
+        # For SQLite, last_insert_rowid returns generated ID
+        if tbl.primary_key != "":
+            if self.dialect.kind == DIALECT_SQLITE:
+                empty_params: list[Value] = []
+                r_rows: list[Row] = self.query_raw("SELECT last_insert_rowid()", empty_params)
+                if len(r_rows) > 0:
+                    return r_rows[0].get_int(0)
+
+        return affected
+
+    def update(self, tbl: Table, values_dict: dict[str, Value], where_clause: WhereClause) -> int:
+
+        self._ensure_open()
+        if where_clause.is_empty():
+            raise QueryBuildError("unfiltered UPDATE prohibited: where_clause must not be empty on table " + tbl.name)
+
+        set_parts: list[str] = []
+        params: list[Value] = []
+
+        i: int = 0
+        while i < len(tbl.columns):
+            col: Column = tbl.columns[i]
+            if values_dict.contains(col.name):
+                q_col: str = self.dialect.quote_identifier(col.name)
+                ph: str = self.dialect.placeholder(len(params))
+                set_parts.append(q_col + " = " + ph)
+                params.append(values_dict[col.name])
+            i = i + 1
+
+        if len(set_parts) == 0:
+            return 0
+
+        q_table: str = self.dialect.quote_identifier(tbl.name)
+        sql: str = "UPDATE " + q_table + " SET " + nox.strings.join(set_parts, ", ") + " WHERE "
+
+        p_idx: int = 0
+        while p_idx < len(where_clause.predicates):
+            pred: Predicate = where_clause.predicates[p_idx]
+            log: int = where_clause.logics[p_idx]
+            if p_idx > 0:
+                if log == LOGIC_OR:
+                    sql = sql + " OR "
+                else:
+                    sql = sql + " AND "
+
+            q_c: str = self.dialect.quote_identifier(pred.col_name)
+
+            if pred.op == OP_IS_NULL:
+                sql = sql + q_c + " IS NULL"
+            elif pred.op == OP_IS_NOT_NULL:
+                sql = sql + q_c + " IS NOT NULL"
+            elif pred.op == OP_IN:
+                if len(pred.val_list) == 0:
+                    sql = sql + "1 = 0"
+                else:
+                    in_phs: list[str] = []
+                    k: int = 0
+                    while k < len(pred.val_list):
+                        in_phs.append(self.dialect.placeholder(len(params)))
+                        params.append(pred.val_list[k])
+                        k = k + 1
+                    sql = sql + q_c + " IN (" + nox.strings.join(in_phs, ", ") + ")"
+            else:
+                op_str: str = " = "
+                if pred.op == OP_NEQ:
+                    op_str = " != "
+                elif pred.op == OP_GT:
+                    op_str = " > "
+                elif pred.op == OP_GTE:
+                    op_str = " >= "
+                elif pred.op == OP_LT:
+                    op_str = " < "
+                elif pred.op == OP_LTE:
+                    op_str = " <= "
+                elif pred.op == OP_LIKE:
+                    op_str = " LIKE "
+
+                ph2: str = self.dialect.placeholder(len(params))
+                params.append(pred.val)
+                sql = sql + q_c + op_str + ph2
+
+            p_idx = p_idx + 1
+
+        return self.execute_raw(sql, params)
+
+    def update_by_id(self, tbl: Table, id_val: Value, values_dict: dict[str, Value]) -> int:
+
+        if tbl.primary_key == "":
+            raise QueryBuildError("table " + tbl.name + " has no primary key defined")
+        wc: WhereClause = WhereClause()
+        wc.add(eq(tbl.primary_key, id_val), 1)
+        return self.update(tbl, values_dict, wc)
+
+    def delete(self, tbl: Table, where_clause: WhereClause) -> int:
+
+        self._ensure_open()
+        if where_clause.is_empty():
+            raise QueryBuildError("unfiltered DELETE prohibited: where_clause must not be empty on table " + tbl.name)
+
+        params: list[Value] = []
+        q_table: str = self.dialect.quote_identifier(tbl.name)
+        sql: str = "DELETE FROM " + q_table + " WHERE "
+
+        p_idx: int = 0
+        while p_idx < len(where_clause.predicates):
+            pred: Predicate = where_clause.predicates[p_idx]
+            log: int = where_clause.logics[p_idx]
+            if p_idx > 0:
+                if log == LOGIC_OR:
+                    sql = sql + " OR "
+                else:
+                    sql = sql + " AND "
+
+            q_c: str = self.dialect.quote_identifier(pred.col_name)
+
+            if pred.op == OP_IS_NULL:
+                sql = sql + q_c + " IS NULL"
+            elif pred.op == OP_IS_NOT_NULL:
+                sql = sql + q_c + " IS NOT NULL"
+            elif pred.op == OP_IN:
+                if len(pred.val_list) == 0:
+                    sql = sql + "1 = 0"
+                else:
+                    in_phs: list[str] = []
+                    k: int = 0
+                    while k < len(pred.val_list):
+                        in_phs.append(self.dialect.placeholder(len(params)))
+                        params.append(pred.val_list[k])
+                        k = k + 1
+                    sql = sql + q_c + " IN (" + nox.strings.join(in_phs, ", ") + ")"
+            else:
+                op_str: str = " = "
+                if pred.op == OP_NEQ:
+                    op_str = " != "
+                elif pred.op == OP_GT:
+                    op_str = " > "
+                elif pred.op == OP_GTE:
+                    op_str = " >= "
+                elif pred.op == OP_LT:
+                    op_str = " < "
+                elif pred.op == OP_LTE:
+                    op_str = " <= "
+                elif pred.op == OP_LIKE:
+                    op_str = " LIKE "
+
+                ph2: str = self.dialect.placeholder(len(params))
+                params.append(pred.val)
+                sql = sql + q_c + op_str + ph2
+
+            p_idx = p_idx + 1
+
+        return self.execute_raw(sql, params)
+
+    def delete_by_id(self, tbl: Table, id_val: Value) -> int:
+
+        if tbl.primary_key == "":
+            raise QueryBuildError("table " + tbl.name + " has no primary key defined")
+        wc: WhereClause = WhereClause()
+        wc.add(eq(tbl.primary_key, id_val), 1)
+        return self.delete(tbl, wc)
+
+    def count(self, tbl: Table) -> int:
+
+        self._ensure_open()
+        q_table: str = self.dialect.quote_identifier(tbl.name)
+        sql: str = "SELECT COUNT(*) FROM " + q_table
+        empty_params: list[Value] = []
+        rows: list[Row] = self.query_raw(sql, empty_params)
+        if len(rows) > 0:
+            return rows[0].get_int(0)
+        return 0
+
+    def count_where(self, tbl: Table, where_clause: WhereClause) -> int:
+
+        self._ensure_open()
+        q_table: str = self.dialect.quote_identifier(tbl.name)
+        sql: str = "SELECT COUNT(*) FROM " + q_table
+        params: list[Value] = []
+
+        if not where_clause.is_empty():
+            sql = sql + " WHERE "
+            p_idx: int = 0
+            while p_idx < len(where_clause.predicates):
+                pred: Predicate = where_clause.predicates[p_idx]
+                log: int = where_clause.logics[p_idx]
+                if p_idx > 0:
+                    if log == LOGIC_OR:
+                        sql = sql + " OR "
+                    else:
+                        sql = sql + " AND "
+
+                q_c: str = self.dialect.quote_identifier(pred.col_name)
+                if pred.op == OP_IS_NULL:
+                    sql = sql + q_c + " IS NULL"
+                elif pred.op == OP_IS_NOT_NULL:
+                    sql = sql + q_c + " IS NOT NULL"
+                else:
+                    op_str: str = " = "
+                    if pred.op == OP_NEQ:
+                        op_str = " != "
+                    elif pred.op == OP_GT:
+                        op_str = " > "
+                    elif pred.op == OP_GTE:
+                        op_str = " >= "
+                    elif pred.op == OP_LT:
+                        op_str = " < "
+                    elif pred.op == OP_LTE:
+                        op_str = " <= "
+                    elif pred.op == OP_LIKE:
+                        op_str = " LIKE "
+
+                    ph: str = self.dialect.placeholder(len(params))
+                    params.append(pred.val)
+                    sql = sql + q_c + op_str + ph
+
+                p_idx = p_idx + 1
+
+        rows: list[Row] = self.query_raw(sql, params)
+        if len(rows) > 0:
+            return rows[0].get_int(0)
+        return 0
+
+    def execute_query[T](self, model: Model[T], q: SelectQuery) -> list[T]:
+
+        self._ensure_open()
+        compiled: CompiledQuery = q.compile(self.dialect)
+        rows: list[Row] = self.query_raw(compiled.sql, compiled.params)
+        return model.decode_rows(rows)
+
+    def find_all[T](self, model: Model[T]) -> list[T]:
+
+        q: SelectQuery = select_all(model.table.name)
+        return self.execute_query[T](model, q)
+
+    def find_by_id[T](self, model: Model[T], id_val: Value) -> T | None:
+
+        if model.table.primary_key == "":
+            raise QueryBuildError("table " + model.table.name + " has no primary key defined")
+        q: SelectQuery = select_all(model.table.name)
+        q.where(eq(model.table.primary_key, id_val))
+        q.limit(1)
+        res: list[T] = self.execute_query[T](model, q)
+        if len(res) > 0:
+            return res[0]
+        return None
+
+    def find_where[T](self, model: Model[T], pred: Predicate) -> list[T]:
+
+        q: SelectQuery = select_all(model.table.name)
+        q.where(pred)
+        return self.execute_query[T](model, q)
+
+    def close(self) -> None:
+
+        if self.owns_conn and not self.is_closed:
+            self.conn.close()
+            self.is_closed = True
+
+def create_session(conn: DbConnection, dialect: Dialect, owns_conn: bool = True) -> Session:
+    fc: FeatherConn = wrap_db_connection(conn)
+    return Session(fc, dialect, owns_conn)

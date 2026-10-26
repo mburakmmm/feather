@@ -1,0 +1,26 @@
+# examples/pooling.nox — Connection pool usage and connection recycling.
+
+import feather
+from feather import ConnectionPool, Session, create_sqlite_pool
+
+def run() -> None:
+    # Create bounded connection pool with max 5 connections
+    cp: ConnectionPool = create_sqlite_pool(":memory:", 5)
+    print("Pool initialized (max=" + str(cp.config.max_connections) + ")")
+
+    # Acquire connection
+    s: Session = cp.acquire()
+    print("Acquired connection from pool. Active: " + str(cp.in_use_count()))
+
+    s.execute_raw("CREATE TABLE metrics (name TEXT, value INT)", [])
+    s.execute_raw("INSERT INTO metrics VALUES ('cpu_usage', 42)", [])
+
+    # Return connection to pool
+    cp.release_connection(s)
+    print("Released connection back to pool. Idle: " + str(cp.idle_count()))
+
+    # Close all pooled connections
+    cp.close_all()
+    print("Pool closed cleanly.")
+
+run()

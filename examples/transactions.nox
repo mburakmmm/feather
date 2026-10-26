@@ -1,0 +1,40 @@
+# examples/transactions.nox — Explicit transaction and rollback handling.
+
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, col_int, col_str, table, open_sqlite_memory, Transaction, begin_transaction
+
+def run() -> None:
+    s: Session = open_sqlite_memory()
+    t: Table = table("bank_accounts", [col_int("id", True), col_str("name"), col_int("balance")])
+    s.create_table(t)
+
+    s.insert(t, {"id": val_int(1), "name": val_str("Alice"), "balance": val_int(1000)})
+    s.insert(t, {"id": val_int(2), "name": val_str("Bob"), "balance": val_int(500)})
+
+    # Simulated Transfer of 200 from Alice to Bob
+    amount: int = 200
+    tx: Transaction = begin_transaction(s)
+    try:
+        # Deduct from Alice
+        s.update_by_id(t, val_int(1), {"balance": val_int(1000 - amount)})
+        # Add to Bob
+        s.update_by_id(t, val_int(2), {"balance": val_int(500 + amount)})
+        tx.commit()
+        print("Transfer succeeded! Committed.")
+    except Exception as e:
+        tx.rollback()
+        print("Transfer failed, rolled back: " + e.message)
+
+    # Simulated Failed Transfer (with intentional rollback)
+    tx_fail: Transaction = begin_transaction(s)
+    try:
+        s.update_by_id(t, val_int(1), {"balance": val_int(0)})
+        # Simulate unexpected error
+        raise Exception("Network timeout during transfer")
+    except Exception as e:
+        tx_fail.rollback()
+        print("Caught error and rolled back successfully: " + e.message)
+
+    s.close()
+
+run()

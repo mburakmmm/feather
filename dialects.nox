@@ -1,0 +1,142 @@
+# dialects.nox — Database engine dialect specifics (SQLite, PostgreSQL, MySQL).
+
+import errors
+from errors import DialectError
+import metadata
+from metadata import Column, Table, TYPE_INTEGER, TYPE_TEXT, TYPE_REAL, TYPE_BOOLEAN
+import nox.strings
+
+DIALECT_SQLITE: int = 1
+DIALECT_POSTGRES: int = 2
+DIALECT_MYSQL: int = 3
+
+class Dialect:
+    kind: int
+    name: str
+
+    def __init__(self: Dialect, kind: int, name: str) -> None:
+        self.kind = kind
+        self.name = name
+
+    def quote_identifier(self: Dialect, id_name: str) -> str:
+
+        if self.kind == DIALECT_MYSQL:
+            return "`" + id_name + "`"
+        return "\"" + id_name + "\""
+
+    def placeholder(self: Dialect, idx: int) -> str:
+
+        if self.kind == DIALECT_POSTGRES:
+            return "$" + str(idx + 1)
+        return "?"
+
+    def column_type_sql(self: Dialect, col: Column) -> str:
+
+        if self.kind == DIALECT_SQLITE:
+            if col.data_type == TYPE_INTEGER:
+                if col.is_primary_key:
+                    if col.is_auto_increment:
+                        return "INTEGER PRIMARY KEY AUTOINCREMENT"
+                    return "INTEGER PRIMARY KEY"
+                return "INTEGER"
+            if col.data_type == TYPE_REAL:
+                return "REAL"
+            if col.data_type == TYPE_BOOLEAN:
+                return "INTEGER"
+            return "TEXT"
+
+        if self.kind == DIALECT_POSTGRES:
+            if col.data_type == TYPE_INTEGER:
+                if col.is_primary_key:
+                    if col.is_auto_increment:
+                        return "SERIAL PRIMARY KEY"
+                    return "INTEGER PRIMARY KEY"
+                return "INTEGER"
+            if col.data_type == TYPE_REAL:
+                return "DOUBLE PRECISION"
+            if col.data_type == TYPE_BOOLEAN:
+                return "BOOLEAN"
+            return "TEXT"
+
+        if self.kind == DIALECT_MYSQL:
+            if col.data_type == TYPE_INTEGER:
+                if col.is_primary_key:
+                    if col.is_auto_increment:
+                        return "INT AUTO_INCREMENT PRIMARY KEY"
+                    return "INT PRIMARY KEY"
+                return "INT"
+            if col.data_type == TYPE_REAL:
+                return "DOUBLE"
+            if col.data_type == TYPE_BOOLEAN:
+                return "TINYINT(1)"
+            return "TEXT"
+
+        raise DialectError("unknown dialect kind: " + str(self.kind))
+
+    def create_table_sql(self: Dialect, tbl: Table) -> str:
+
+        q_table: str = self.quote_identifier(tbl.name)
+        parts: list[str] = []
+        i: int = 0
+        while i < len(tbl.columns):
+            col: Column = tbl.columns[i]
+            q_col: str = self.quote_identifier(col.name)
+            col_sql: str = q_col + " " + self.column_type_sql(col)
+            if not col.is_primary_key:
+                if not col.is_nullable:
+                    col_sql = col_sql + " NOT NULL"
+                if col.is_unique:
+                    col_sql = col_sql + " UNIQUE"
+            parts.append(col_sql)
+            i = i + 1
+
+        body: str = nox.strings.join(parts, ", ")
+        return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + body + ")"
+
+    def drop_table_sql(self: Dialect, tbl: Table) -> str:
+
+        return "DROP TABLE IF EXISTS " + self.quote_identifier(tbl.name)
+
+    def boolean_sql(self: Dialect, b: bool) -> str:
+
+        if self.kind == DIALECT_POSTGRES:
+            if b:
+                return "TRUE"
+            return "FALSE"
+        if b:
+            return "1"
+        return "0"
+
+    def limit_offset_sql(self: Dialect, limit: int, offset: int) -> str:
+
+        sql: str = ""
+        if limit >= 0:
+            sql = " LIMIT " + str(limit)
+        if offset >= 0:
+            if limit < 0 and self.kind == DIALECT_SQLITE:
+                sql = " LIMIT -1 OFFSET " + str(offset)
+            else:
+                sql = sql + " OFFSET " + str(offset)
+        return sql
+
+    def supports_returning(self: Dialect) -> bool:
+
+        return self.kind == DIALECT_POSTGRES
+
+def sqlite_dialect() -> Dialect:
+    return Dialect(DIALECT_SQLITE, "sqlite")
+
+def postgres_dialect() -> Dialect:
+    return Dialect(DIALECT_POSTGRES, "postgres")
+
+def mysql_dialect() -> Dialect:
+    return Dialect(DIALECT_MYSQL, "mysql")
+
+def get_dialect(kind: int) -> Dialect:
+    if kind == DIALECT_SQLITE:
+        return sqlite_dialect()
+    if kind == DIALECT_POSTGRES:
+        return postgres_dialect()
+    if kind == DIALECT_MYSQL:
+        return mysql_dialect()
+    raise DialectError("unsupported dialect kind: " + str(kind))

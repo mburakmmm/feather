@@ -1,0 +1,34 @@
+# examples/migrations.nox — Schema migration manager demonstration.
+
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration
+
+def run() -> None:
+    s: Session = open_sqlite_memory()
+
+    m1: Migration = migration(1, "create_users_table", ["CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)"], ["DROP TABLE IF EXISTS users"])
+
+    m2: Migration = migration(2, "add_role_column", ["ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"], ["DROP TABLE IF EXISTS users"])
+
+    mgr: MigrationManager = MigrationManager(s, [m1, m2])
+
+    print("--- Initial Migration Status ---")
+    st_init: list[str] = mgr.status()
+    i: int = 0
+    while i < len(st_init):
+        print(st_init[i])
+        i = i + 1
+
+    applied: int = mgr.migrate_up()
+    print("Migrated UP: " + str(applied) + " migrations applied.")
+
+    print("--- Status After Migration ---")
+    st_after: list[str] = mgr.status()
+    j: int = 0
+    while j < len(st_after):
+        print(st_after[j])
+        j = j + 1
+
+    s.close()
+
+run()

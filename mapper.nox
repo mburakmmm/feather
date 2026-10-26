@@ -1,0 +1,118 @@
+# mapper.nox — Model definition, row decoding helpers, and generic typed mapping.
+
+import nox.db
+from nox.db import Row
+import metadata
+from metadata import Table, Column
+import value
+from value import Value, val_int, val_str, val_float, val_bool, val_null
+import errors
+from errors import MappingError
+
+def row_is_null(row: Row, idx: int) -> bool:
+    return row.is_null(idx)
+
+def row_get_int(row: Row, idx: int) -> int:
+    if row.is_null(idx):
+        raise MappingError("column at index " + str(idx) + " is NULL, expected non-null int")
+    return row.get_int(idx)
+
+def row_get_str(row: Row, idx: int) -> str:
+    if row.is_null(idx):
+        raise MappingError("column at index " + str(idx) + " is NULL, expected non-null str")
+    return row.get_str(idx)
+
+def row_get_float(row: Row, idx: int) -> float:
+    if row.is_null(idx):
+        raise MappingError("column at index " + str(idx) + " is NULL, expected non-null float")
+    return row.get_float(idx)
+
+def row_get_bool(row: Row, idx: int) -> bool:
+    if row.is_null(idx):
+        raise MappingError("column at index " + str(idx) + " is NULL, expected non-null bool")
+    s: str = row.get_str(idx)
+    if s == "1" or s == "true" or s == "TRUE" or s == "t":
+        return True
+    return False
+
+def row_get_opt_int(row: Row, idx: int) -> int | None:
+    if row.is_null(idx):
+        return None
+    return row.get_int(idx)
+
+def row_get_opt_str(row: Row, idx: int) -> str | None:
+    if row.is_null(idx):
+        return None
+    return row.get_str(idx)
+
+def row_get_opt_float(row: Row, idx: int) -> float | None:
+    if row.is_null(idx):
+        return None
+    return row.get_float(idx)
+
+def row_get_opt_bool(row: Row, idx: int) -> bool | None:
+    if row.is_null(idx):
+        return None
+    return row_get_bool(row, idx)
+
+def find_column_index(row: Row, col_name: str) -> int:
+    n: int = row.column_count()
+    i: int = 0
+    while i < n:
+        if row.column_name(i) == col_name:
+            return i
+        i = i + 1
+    return -1
+
+def row_get_int_by_name(row: Row, col_name: str) -> int:
+    idx: int = find_column_index(row, col_name)
+    if idx < 0:
+        raise MappingError("column not found in row: " + col_name)
+    return row_get_int(row, idx)
+
+def row_get_str_by_name(row: Row, col_name: str) -> str:
+    idx: int = find_column_index(row, col_name)
+    if idx < 0:
+        raise MappingError("column not found in row: " + col_name)
+    return row_get_str(row, idx)
+
+def row_get_float_by_name(row: Row, col_name: str) -> float:
+    idx: int = find_column_index(row, col_name)
+    if idx < 0:
+        raise MappingError("column not found in row: " + col_name)
+    return row_get_float(row, idx)
+
+def row_get_bool_by_name(row: Row, col_name: str) -> bool:
+    idx: int = find_column_index(row, col_name)
+    if idx < 0:
+        raise MappingError("column not found in row: " + col_name)
+    return row_get_bool(row, idx)
+
+class Model[T]:
+    table: Table
+    decoder: (Row) -> T
+    encoder: (T) -> dict[str, Value]
+
+    def __init__(self, table: Table, decoder: (Row) -> T, encoder: (T) -> dict[str, Value]) -> None:
+        self.table = table
+        self.decoder = decoder
+        self.encoder = encoder
+
+    def decode(self, row: Row) -> T:
+
+        d: (Row) -> T = self.decoder
+        return d(row)
+
+    def encode(self, obj: T) -> dict[str, Value]:
+
+        e: (T) -> dict[str, Value] = self.encoder
+        return e(obj)
+
+    def decode_rows(self, rows: list[Row]) -> list[T]:
+
+        out: list[T] = []
+        i: int = 0
+        while i < len(rows):
+            out.append(self.decode(rows[i]))
+            i = i + 1
+        return out

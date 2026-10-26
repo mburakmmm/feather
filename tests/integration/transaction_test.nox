@@ -1,0 +1,78 @@
+# tests/integration/transaction_test.nox — Integration tests for transaction lifecycle and rollback.
+
+import nox.test
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, col_int, col_str, table, open_sqlite_memory, Transaction, begin_transaction, TX_STATE_IDLE, TX_STATE_ACTIVE, TX_STATE_COMMITTED, TX_STATE_ROLLED_BACK
+import errors
+from errors import TransactionError
+
+s: Session = open_sqlite_memory()
+t: Table = table("accounts", [col_int("id", True), col_str("owner"), col_int("balance")])
+s.create_table(t)
+
+# Insert initial account
+init_vals: dict[str, Value] = {}
+init_vals["id"] = val_int(1)
+init_vals["owner"] = val_str("Alice")
+init_vals["balance"] = val_int(1000)
+s.insert(t, init_vals)
+
+# 1. Transaction Commit
+tx1: Transaction = Transaction(s)
+nox.test.assert_eq_int(tx1.state, TX_STATE_IDLE, "Initial transaction state is IDLE")
+tx1.begin()
+nox.test.assert_eq_int(tx1.state, TX_STATE_ACTIVE, "Transaction state is ACTIVE after begin()")
+nox.test.assert_true(tx1.is_active(), "is_active() is True")
+
+u2_vals: dict[str, Value] = {}
+u2_vals["id"] = val_int(2)
+u2_vals["owner"] = val_str("Bob")
+u2_vals["balance"] = val_int(500)
+s.insert(t, u2_vals)
+
+tx1.commit()
+nox.test.assert_eq_int(tx1.state, TX_STATE_COMMITTED, "Transaction state is COMMITTED after commit()")
+nox.test.assert_true(not tx1.is_active(), "is_active() is False after commit")
+nox.test.assert_eq_int(s.count(t), 2, "Both accounts exist after commit")
+
+# 2. Transaction Rollback
+tx2: Transaction = begin_transaction(s)
+u3_vals: dict[str, Value] = {}
+u3_vals["id"] = val_int(3)
+u3_vals["owner"] = val_str("Charlie")
+u3_vals["balance"] = val_int(200)
+s.insert(t, u3_vals)
+nox.test.assert_eq_int(s.count(t), 3, "Account 3 visible within transaction")
+
+tx2.rollback()
+nox.test.assert_eq_int(tx2.state, TX_STATE_ROLLED_BACK, "Transaction state is ROLLED_BACK")
+nox.test.assert_eq_int(s.count(t), 2, "Account 3 was rolled back, count remains 2")
+
+# 3. Double commit / commit after rollback raises TransactionError
+caught_tx_err: bool = False
+try:
+    tx2.commit()
+except TransactionError as e:
+    caught_tx_err = True
+nox.test.assert_true(caught_tx_err, "Calling commit() on rolled back transaction raises TransactionError")
+
+# 4. Error recovery with rollback
+tx3: Transaction = begin_transaction(s)
+failed_op: bool = False
+try:
+    # Attempt inserting duplicate primary key (id=1 already exists)
+    dup_vals: dict[str, Value] = {}
+    dup_vals["id"] = val_int(1)
+    dup_vals["owner"] = val_str("Imposter")
+    dup_vals["balance"] = val_int(0)
+    s.insert(t, dup_vals)
+except Exception as e_dup:
+    failed_op = True
+    tx3.rollback()
+
+nox.test.assert_true(failed_op, "Duplicate key insert failed as expected")
+nox.test.assert_eq_int(tx3.state, TX_STATE_ROLLED_BACK, "Transaction rolled back cleanly after error")
+nox.test.assert_eq_int(s.count(t), 2, "Database state consistent after transaction failure")
+
+s.close()
+print("transaction_test passed")
