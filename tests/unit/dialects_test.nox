@@ -65,4 +65,13 @@ mig_my: str = d_my.migration_table_sql()
 nox.test.assert_true("`id` INT AUTO_INCREMENT PRIMARY KEY" in mig_my, "MySQL migration table uses INT AUTO_INCREMENT PRIMARY KEY")
 nox.test.assert_true("`version` INT NOT NULL UNIQUE" in mig_my, "MySQL migration table uses INT for version")
 
+# 7. Transactional DDL Support
+nox.test.assert_true(d_sqlite.supports_transactional_ddl(), "SQLite supports transactional DDL")
+nox.test.assert_true(d_pg.supports_transactional_ddl(), "PostgreSQL supports transactional DDL")
+nox.test.assert_true(not d_my.supports_transactional_ddl(), "MySQL DDL commits implicitly (non-transactional DDL)")
+
+# 8. Migration Lock Table DDL
+nox.test.assert_true("CREATE TABLE IF NOT EXISTS \"_feather_migration_lock\"" in d_sqlite.migration_lock_table_sql(), "SQLite lock table DDL")
+nox.test.assert_true("CREATE TABLE IF NOT EXISTS `_feather_migration_lock`" in d_my.migration_lock_table_sql(), "MySQL lock table DDL")
+
 print("dialects_test passed")

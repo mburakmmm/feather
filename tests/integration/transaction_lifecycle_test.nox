@@ -138,4 +138,36 @@ nox.test.assert_eq_int(cp5.idle_count(), 0, "Poisoned session discarded, idle re
 nox.test.assert_eq_int(cp5.total_count(), 0, "Total count reflects discarded broken connection")
 cp5.close_all()
 
+# -------------------------------------------------------------
+# Test 8: Poisoned session blocks normal operations
+# -------------------------------------------------------------
+cp6: ConnectionPool = create_sqlite_pool(":memory:", 2)
+s10: Session = cp6.acquire()
+s10.create_table(tbl)
+s10.execute_raw("BEGIN TRANSACTION", [])
+s10.is_poisoned = True
+
+poison_query_blocked: bool = False
+try:
+    s10.insert(tbl, {"id": val_int(100), "title": val_str("blocked")})
+except ConnectionError as ce_poison:
+    poison_query_blocked = True
+
+nox.test.assert_true(poison_query_blocked, "Normal insert rejected on poisoned session")
+
+poison_raw_blocked: bool = False
+try:
+    s10.query_raw("SELECT * FROM tx_items", [])
+except ConnectionError as ce_raw:
+    poison_raw_blocked = True
+
+nox.test.assert_true(poison_raw_blocked, "Normal query_raw rejected on poisoned session")
+
+# Rollback cleanup on poisoned session is permitted through _ensure_open(allow_cleanup=True)
+s10.execute_raw("ROLLBACK", [])
+
+cp6.release_connection(s10)
+nox.test.assert_eq_int(cp6.idle_count(), 0, "Poisoned session s10 was discarded on release")
+cp6.close_all()
+
 print("transaction_lifecycle_test passed")

@@ -5,6 +5,32 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-10-27
+
+### Added
+- **Migration Concurrency Locking (`migrations.nox`, `dialects.nox`):**
+  - Added dedicated `_feather_migration_lock` table tracking active migration locks (`id`, `is_locked`, `locked_at`, `locked_by`).
+  - `acquire_lock(locked_by: str = "feather")` and `release_lock()` prevent race conditions when multiple application instances attempt simultaneous schema migrations.
+  - `migrate_up()` and `migrate_down()` automatically acquire the concurrency lock and ensure it is reliably released even upon failure.
+- **Migration Dry-Run & Plan Inspection (`migrations.nox`):**
+  - Added `plan_up() -> list[str]` returning the exact list of UP SQL statements that would be executed without applying them.
+  - Added `plan_down(target_version: int) -> list[str]` returning the rollback SQL statements without altering database state.
+- **Dialect-Aware Transactional DDL Policy (`dialects.nox`, `migrations.nox`):**
+  - Added `Dialect.supports_transactional_ddl() -> bool` returning `True` for SQLite and PostgreSQL, and `False` for MySQL.
+  - Accurately accounts for MySQL's implicit commit behavior on DDL statements (`CREATE`, `DROP`, `ALTER`).
+  - In MySQL, non-transactional DDL execution failures are explicitly diagnosed with clear messages indicating potential partial execution due to implicit commits.
+- **Dedicated Migration Concurrency & Dry-Run Test Suite:**
+  - Added `tests/integration/migration_lock_test.nox` verifying lock acquisition, concurrent acquisition rejection, automatic release, and `plan_up`/`plan_down` dry runs.
+
+### Changed & Hardened
+- **Poisoned Session Query Guard (`session.nox`):**
+  - `_ensure_open(allow_cleanup: bool = False)` now actively checks `self.is_poisoned`.
+  - Normal CRUD queries (`insert`, `update`, `delete`, `create_table`, `query_raw`, etc.) on a poisoned session immediately raise `ConnectionError("cannot execute operation on a poisoned Session: connection or transaction state is corrupted")`.
+  - Controlled transaction cleanup operations (`ROLLBACK`) are permitted through `allow_cleanup = True` during recovery before session release.
+- **Strict SQL Token Parsing for Raw Transactions (`session.nox`):**
+  - Replaced broad prefix matching with tokenized SQL parsing (`nox.strings.split`).
+  - Verifies exact command tokens (`first_token == "BEGIN"`, `first_token == "START" and second_token == "TRANSACTION"`), preventing false matches on non-transactional identifiers like `BEGINNING`.
+
 ## [0.2.4] - 2026-10-27
 
 ### Added

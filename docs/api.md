@@ -141,8 +141,12 @@ Computes legacy 8-character DJB2 checksum for backward compatibility with v0.2.0
 ### `class MigrationManager`
 - `__init__(session: Session, migrations: list[Migration])`: Validates migration uniqueness (raising `MigrationError` on duplicate versions) and automatically sorts migrations in ascending version order via deterministic insertion sort.
 - `verify_checksums() -> None`: Performs two-phase verification across all applied migrations. Validates legacy checksums in-memory first; only if all migrations pass is an atomic batch update executed to upgrade legacy checksums to SHA-256. If any record fails or if an applied migration in the database is missing from the migration list, an explicit `MigrationError` is raised.
-- `migrate_up() -> int`: Executes pending migrations inside transactions in strictly ascending version order (`1 -> 2 -> 3`) after checksum verification.
-- `migrate_down(target_version: int) -> int`: Validates checksums with `verify_checksums()` prior to rollback, then rolls back migrations in strictly descending version order (`3 -> 2 -> 1`) down to target.
+- `acquire_lock(locked_by: str = "feather") -> None`: Acquires an advisory schema migration lock in `_feather_migration_lock`. Raises `MigrationError` if the lock is already held by another runner or application instance.
+- `release_lock() -> None`: Releases the advisory schema migration lock.
+- `plan_up() -> list[str]`: Dry-run preview returning all UP SQL statements that would be executed without applying them.
+- `plan_down(target_version: int) -> list[str]`: Dry-run preview returning all DOWN SQL statements that would be executed to roll back to `target_version`.
+- `migrate_up() -> int`: Executes pending migrations inside transactions (or non-transactional DDL mode on MySQL) in strictly ascending version order (`1 -> 2 -> 3`) after acquiring concurrency lock and checksum verification.
+- `migrate_down(target_version: int) -> int`: Validates checksums with `verify_checksums()` prior to rollback, then rolls back migrations in strictly descending version order (`3 -> 2 -> 1`) down to target under concurrency lock.
 - `get_applied_versions() -> list[int]`: Returns list of applied version numbers.
 - `get_pending_migrations() -> list[Migration]`: Returns list of unapplied migrations.
 - `status() -> list[str]`: Returns status report strings for each migration.

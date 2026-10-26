@@ -13,6 +13,7 @@ Feather supports three major SQL database engines through dedicated dialect defi
 | Boolean Type DDL | `INTEGER` | `BOOLEAN` | `TINYINT(1)` |
 | Real / Float Type DDL | `REAL` | `DOUBLE PRECISION` | `DOUBLE` |
 | Transaction Start | `BEGIN` | `BEGIN` | `START TRANSACTION` |
+| Transactional DDL | Yes (supports DDL rollback) | Yes (supports DDL rollback) | No (DDL causes implicit commit) |
 
 ## Instantiating Dialects
 

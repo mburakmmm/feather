@@ -81,10 +81,12 @@ class Session:
         self.in_transaction = False
         self.is_poisoned = False
 
-    def _ensure_open(self) -> None:
+    def _ensure_open(self, allow_cleanup: bool = False) -> None:
 
         if self.is_closed or self.is_released:
             raise ConnectionError("cannot execute operation on a closed or released Session")
+        if self.is_poisoned and not allow_cleanup:
+            raise ConnectionError("cannot execute operation on a poisoned Session: connection or transaction state is corrupted")
 
     def create_table(self, tbl: Table) -> None:
 
@@ -100,20 +102,30 @@ class Session:
 
     def execute_raw(self, sql: str, params: list[Value]) -> int:
 
-        self._ensure_open()
+        trimmed: str = nox.strings.upper(nox.strings.trim(sql))
+        if nox.strings.ends_with(trimmed, ";"):
+            trimmed = nox.strings.trim(trimmed[0:len(trimmed) - 1])
+
+        is_cleanup: bool = (trimmed == "ROLLBACK")
+        self._ensure_open(is_cleanup)
         stmt: Statement = self.conn.prepare(sql)
         i: int = 0
         while i < len(params):
             bind_value(stmt, i, params[i])
             i = i + 1
         affected: int = stmt.execute()
-        trimmed: str = nox.strings.upper(nox.strings.trim(sql))
-        if nox.strings.ends_with(trimmed, ";"):
-            trimmed = nox.strings.trim(trimmed[0:len(trimmed) - 1])
 
-        if nox.strings.starts_with(trimmed, "BEGIN") or nox.strings.starts_with(trimmed, "START TRANSACTION"):
+        tokens: list[str] = nox.strings.split(trimmed, " ")
+        first_token: str = ""
+        second_token: str = ""
+        if len(tokens) > 0:
+            first_token = tokens[0]
+        if len(tokens) > 1:
+            second_token = tokens[1]
+
+        if first_token == "BEGIN" or (first_token == "START" and second_token == "TRANSACTION"):
             self.in_transaction = True
-        elif trimmed == "COMMIT" or trimmed == "ROLLBACK" or trimmed == "END":
+        elif first_token == "COMMIT" or first_token == "ROLLBACK" or first_token == "END":
             self.in_transaction = False
         return affected
 

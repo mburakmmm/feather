@@ -201,6 +201,20 @@ class Dialect:
 
         raise DialectError("unknown dialect kind: " + str(self.kind))
 
+    def migration_lock_table_sql(self: Dialect) -> str:
+
+        q_table: str = self.quote_identifier("_feather_migration_lock")
+        q_id: str = self.quote_identifier("id")
+        q_locked: str = self.quote_identifier("is_locked")
+        q_time: str = self.quote_identifier("locked_at")
+        q_by: str = self.quote_identifier("locked_by")
+
+        if self.kind == DIALECT_SQLITE or self.kind == DIALECT_POSTGRES:
+            return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " INTEGER PRIMARY KEY, " + q_locked + " INTEGER NOT NULL, " + q_time + " TEXT NOT NULL, " + q_by + " TEXT NOT NULL)"
+        if self.kind == DIALECT_MYSQL:
+            return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " INT PRIMARY KEY, " + q_locked + " INT NOT NULL, " + q_time + " TEXT NOT NULL, " + q_by + " TEXT NOT NULL)"
+        raise DialectError("unknown dialect kind: " + str(self.kind))
+
     def boolean_sql(self: Dialect, b: bool) -> str:
 
         if self.kind == DIALECT_POSTGRES:
@@ -226,6 +240,12 @@ class Dialect:
     def supports_returning(self: Dialect) -> bool:
 
         return self.kind == DIALECT_POSTGRES
+
+    def supports_transactional_ddl(self: Dialect) -> bool:
+
+        if self.kind == DIALECT_MYSQL:
+            return False
+        return True
 
 def sqlite_dialect() -> Dialect:
     return Dialect(DIALECT_SQLITE, "sqlite")
