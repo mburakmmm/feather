@@ -37,6 +37,12 @@ import relations
 from relations import Relation, RelationLoader, has_one, has_many, belongs_to, many_to_many, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO, REL_MANY_TO_MANY, BATCH_CHUNK_SIZE
 
 import nox.sqlite
+import nox.db
+from nox.db import DbConnection
+
+# Re-export session creation helper
+def create_session(conn: DbConnection, dialect: Dialect, owns_conn: bool = True) -> Session:
+    return session.create_session(conn, dialect, owns_conn)
 
 # Convenience helper for opening an SQLite session
 def connect_sqlite(path: str) -> Session:

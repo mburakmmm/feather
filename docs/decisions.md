@@ -41,3 +41,34 @@
 - **Context:** Full active-record graph persistence leads to unpredictable N+1 queries.
 - **Decision:** Define explicit relationships (`HasOne`, `HasMany`, `BelongsTo`) and provide explicit eager loader methods that execute bounded, transparent queries.
 - **Consequences:** Highly predictable query count, zero hidden lazy database fetches.
+
+## ADR 008: Poisoned Connection Isolation and Monotonic Leases
+
+- **Context:** Sockets severed mid-transaction or failed commits can corrupt connection state. Attempting subsequent rollbacks or re-leasing damaged connections causes cascading failures.
+- **Decision:** Track `Session.is_poisoned` and `Session.lease_id`. Discard severed connections immediately upon release without running redundant rollbacks. Enforce capacity invariants (`total = active + idle <= max`). Block queries on poisoned sessions while permitting rollback cleanup.
+- **Consequences:** Bulletproof connection pool stability, zero capacity leaks, and immediate quarantine of broken sockets.
+
+## ADR 009: Two-Phase Tamper-Resistant Migration Checksums
+
+- **Context:** Migration files must be guarded against post-deployment tampering. Migrating from 8-character hashes to SHA-256 without breaking existing databases requires smooth upgrades.
+- **Decision:** Use standard SHA-256 checksums across UP and DOWN SQLs. Perform a two-phase check: validate legacy checksums in-memory, and only when all migrations verify, atomically upgrade database records to SHA-256. Reject duplicate or unknown applied versions.
+- **Consequences:** Uncompromising cryptographic integrity with backwards compatibility.
+
+## ADR 010: Grouped Batch Relations and Large IN Chunking
+
+- **Context:** Resolving 1:N relations across many parents via individual queries causes N+1 performance degradation. Exceeding SQLite's 999 parameter limit in raw `IN (...)` queries crashes drivers.
+- **Decision:** Implement `load_has_many_grouped` returning `dict[int, list[Child]]` (and `load_has_many_grouped_str` for string/UUID keys) in a single batched query, automatically chunked into 500-element slices.
+- **Consequences:** Eliminates N+1 queries cleanly, supports UUID/string PKs, and guarantees zero parameter limit violations.
+
+## ADR 011: Truly Atomic Migration Concurrency Locking & Non-Transactional DDL State Tracking
+
+- **Context:** High-concurrency or multi-instance deployments risk simultaneous migration execution. Multi-step SELECT then INSERT/UPDATE patterns create race conditions. Furthermore, MySQL executes DDL with implicit commits, making traditional transaction rollbacks impossible.
+- **Decision:**
+  1. Pre-initialize a singleton lock row (`id = 1`) via dialect-specific SQL (`INSERT OR IGNORE`, `ON CONFLICT DO NOTHING`, `ON DUPLICATE KEY UPDATE`).
+  2. Perform lock acquisition in a single atomic database statement:
+     `UPDATE _feather_migration_lock SET is_locked = 1, locked_at = ?, locked_by = ?, timeout_at = ? WHERE id = 1 AND (is_locked = 0 OR timeout_at < ?)`.
+  3. Enforce lock ownership matching on release (`release_lock(owner_token)`).
+  4. Automatically recover stale locks when `timeout_at < current_timestamp`.
+  5. For non-transactional DDL engines (MySQL), track execution states (`RUNNING`, `APPLIED`, `FAILED`) in `_feather_migrations`, preventing corrupted retries of partially applied DDL.
+  6. Provide zero-side-effect dry runs (`preview_up`, `preview_down`).
+- **Consequences:** 100% database-engine atomicity, cross-runner ownership protection, resilient stale-lock recovery, and schema protection against MySQL non-transactional DDL failures.

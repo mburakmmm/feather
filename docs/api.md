@@ -140,14 +140,16 @@ Computes legacy 8-character DJB2 checksum for backward compatibility with v0.2.0
 
 ### `class MigrationManager`
 - `__init__(session: Session, migrations: list[Migration])`: Validates migration uniqueness (raising `MigrationError` on duplicate versions) and automatically sorts migrations in ascending version order via deterministic insertion sort.
-- `verify_checksums() -> None`: Performs two-phase verification across all applied migrations. Validates legacy checksums in-memory first; only if all migrations pass is an atomic batch update executed to upgrade legacy checksums to SHA-256. If any record fails or if an applied migration in the database is missing from the migration list, an explicit `MigrationError` is raised.
-- `acquire_lock(locked_by: str = "feather") -> None`: Acquires an advisory schema migration lock in `_feather_migration_lock`. Raises `MigrationError` if the lock is already held by another runner or application instance.
-- `release_lock() -> None`: Releases the advisory schema migration lock.
-- `plan_up() -> list[str]`: Dry-run preview returning all UP SQL statements that would be executed without applying them.
-- `plan_down(target_version: int) -> list[str]`: Dry-run preview returning all DOWN SQL statements that would be executed to roll back to `target_version`.
-- `migrate_up() -> int`: Executes pending migrations inside transactions (or non-transactional DDL mode on MySQL) in strictly ascending version order (`1 -> 2 -> 3`) after acquiring concurrency lock and checksum verification.
+- `verify_checksums() -> None`: Performs two-phase verification across all applied migrations. Validates legacy checksums in-memory first; only if all migrations pass is an atomic batch update executed to upgrade legacy checksums to SHA-256. If any record fails, if an applied migration in the database is missing from the migration list, or if a migration is in `FAILED` state, an explicit `MigrationError` is raised.
+- `acquire_lock(locked_by: str = "", timeout_seconds: int = 300) -> str`: Atomically acquires the migration concurrency lock via a single conditional `UPDATE` on `_feather_migration_lock`. Automatically reclaims stale locks where `timeout_at < current_timestamp`. Returns a unique ownership token string. Raises `MigrationError` if actively held by another runner.
+- `release_lock(owner_token: str = "") -> None`: Releases the migration lock with ownership verification. Raises `MigrationError` if `owner_token` does not match the active lock holder.
+- `preview_up() -> list[str]`: Completely side-effect-free dry run returning all pending UP SQL statements without acquiring locks or creating/modifying tables.
+- `preview_down(target_version: int) -> list[str]`: Completely side-effect-free dry run returning all rollback SQL statements to reach `target_version` without database mutation.
+- `plan_up() -> list[str]`: Alias for `preview_up()`.
+- `plan_down(target_version: int) -> list[str]`: Alias for `preview_down(target_version)`.
+- `migrate_up() -> int`: Executes pending migrations inside transactions (or non-transactional DDL state-tracked mode on MySQL with `RUNNING`, `APPLIED`, `FAILED` transitions) in strictly ascending version order (`1 -> 2 -> 3`) after acquiring concurrency lock and verifying checksums.
 - `migrate_down(target_version: int) -> int`: Validates checksums with `verify_checksums()` prior to rollback, then rolls back migrations in strictly descending version order (`3 -> 2 -> 1`) down to target under concurrency lock.
-- `get_applied_versions() -> list[int]`: Returns list of applied version numbers.
+- `get_applied_versions() -> list[int]`: Returns list of successfully applied version numbers (`status == 'APPLIED'`). Raises `MigrationError` if any migration is recorded in `FAILED` or `RUNNING` status.
 - `get_pending_migrations() -> list[Migration]`: Returns list of unapplied migrations.
 - `status() -> list[str]`: Returns status report strings for each migration.
 

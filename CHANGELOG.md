@@ -5,6 +5,32 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-10-27
+
+### Added
+- **Atomic Concurrency Lock Acquisition (`migrations.nox`, `dialects.nox`):**
+  - Pre-initializes a singleton lock row (`id = 1`) via `Dialect.init_migration_lock_row_sql()` (`INSERT OR IGNORE` in SQLite, `ON CONFLICT (id) DO NOTHING` in PostgreSQL, `ON DUPLICATE KEY UPDATE` in MySQL).
+  - Single conditional `UPDATE _feather_migration_lock SET is_locked = 1, locked_at = ?, locked_by = ?, timeout_at = ? WHERE id = 1 AND (is_locked = 0 OR timeout_at < ?)` executes with 100% database engine-level atomicity, eliminating race conditions between select and update.
+- **Lock Ownership Verification (`migrations.nox`):**
+  - Generates unique ownership tokens for each lock acquisition (`token: str = mgr.acquire_lock(...)`).
+  - `release_lock(owner_token)` strictly validates lock ownership against the database record before releasing. Attempts by third-party runners or different instances to release another runner's lock raise `MigrationError("cannot release migration lock: lock ownership mismatch ...")`.
+- **Stale Lock Recovery & Timeout Handling (`dialects.nox`, `migrations.nox`):**
+  - Added `timeout_at` integer column to `_feather_migration_lock`.
+  - `acquire_lock(locked_by, timeout_seconds = 300)` automatically sets expiration epoch. Stale locks left behind by crashed or killed workers are automatically and atomically reclaimed when `timeout_at < current_timestamp`.
+- **MySQL Non-Transactional DDL Failure State Tracking (`dialects.nox`, `migrations.nox`):**
+  - Added `status` column (`'RUNNING'`, `'APPLIED'`, `'FAILED'`) to `_feather_migrations`.
+  - On non-transactional DDL engines (e.g., MySQL implicit commits), migrations are recorded as `'RUNNING'` prior to executing DDL statements.
+  - Successfully executed migrations transition to `'APPLIED'`.
+  - Failed migrations transition to `'FAILED'`. Any subsequent run immediately halts with `MigrationError` until manual resolution, preventing corrupted retries of partially applied DDL.
+- **Zero-Side-Effect Dry-Run Previews (`migrations.nox`):**
+  - Added `preview_up() -> list[str]` and `preview_down(target_version: int) -> list[str]` which inspect schema state without acquiring locks, initializing tables, or mutating the database.
+- **Strict Whitespace-Independent SQL Tokenizer (`session.nox`):**
+  - Implemented `_extract_sql_tokens(sql)` which scans across spaces, tabs (`\t`), newlines (`\n`, `\r`), and semicolons (`;`).
+  - Correctly detects `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `END` with arbitrary leading/trailing whitespace or newlines without false matches on words like `BEGINNING`.
+- **Multi-Connection Concurrency Integration Suite (`tests/integration/migration_lock_test.nox`):**
+  - Validates true cross-process concurrency using independent connection handles over shared memory (`file:memdb_shared_lock?mode=memory&cache=shared`).
+  - Confirms lock conflicts, ownership protection, stale lock recovery, and zero side-effects on dry-run previews.
+
 ## [0.2.5] - 2026-10-27
 
 ### Added

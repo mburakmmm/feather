@@ -4,7 +4,7 @@ import nox.test
 import feather
 from feather import ConnectionPool, create_sqlite_pool, Session, Transaction, begin_transaction, Table, col_int, col_str, table, val_int, val_str, TX_STATE_COMMITTED, TX_STATE_ROLLED_BACK
 import errors
-from errors import TransactionError
+from errors import TransactionError, ConnectionError
 
 tbl: Table = table("tx_items", [col_int("id", True), col_str("title")])
 
@@ -107,6 +107,19 @@ s8.execute_raw("BEGIN IMMEDIATE;", [])
 nox.test.assert_true(s8.in_transaction, "BEGIN IMMEDIATE; sets in_transaction = True")
 s8.execute_raw("ROLLBACK;", [])
 nox.test.assert_true(not s8.in_transaction, "ROLLBACK; sets in_transaction = False")
+
+# Whitespace, newline, and semicolon variations
+s8.execute_raw("  \n\t  BEGIN   \t  ;  \n", [])
+nox.test.assert_true(s8.in_transaction, "Whitespace-heavy BEGIN sets in_transaction = True")
+s8.execute_raw("\n  COMMIT  ; \n", [])
+nox.test.assert_true(not s8.in_transaction, "Whitespace-heavy COMMIT sets in_transaction = False")
+
+# Word beginning with BEGIN (e.g. BEGINNING) does not falsely trigger in_transaction
+beg_tbl: Table = table("beginning_tbl", [col_int("id", True)])
+s8.create_table(beg_tbl)
+s8.execute_raw("INSERT INTO beginning_tbl (id) VALUES (1);", [])
+nox.test.assert_true(not s8.in_transaction, "Table name starting with BEGINNING does not trigger in_transaction")
+
 cp4.release_connection(s8)
 cp4.close_all()
 

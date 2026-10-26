@@ -57,21 +57,38 @@ nox.test.assert_true(not d_my.supports_returning(), "MySQL does not rely on RETU
 # 6. Migration Table DDL
 mig_lite: str = d_sqlite.migration_table_sql()
 nox.test.assert_true("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT" in mig_lite, "SQLite migration table uses INTEGER PRIMARY KEY AUTOINCREMENT")
+nox.test.assert_true("\"status\" TEXT NOT NULL DEFAULT 'APPLIED'" in mig_lite, "SQLite migration table has status column")
 
 mig_pg: str = d_pg.migration_table_sql()
 nox.test.assert_true("\"id\" SERIAL PRIMARY KEY" in mig_pg, "PostgreSQL migration table uses SERIAL PRIMARY KEY")
+nox.test.assert_true("\"status\" TEXT NOT NULL DEFAULT 'APPLIED'" in mig_pg, "PostgreSQL migration table has status column")
 
 mig_my: str = d_my.migration_table_sql()
 nox.test.assert_true("`id` INT AUTO_INCREMENT PRIMARY KEY" in mig_my, "MySQL migration table uses INT AUTO_INCREMENT PRIMARY KEY")
 nox.test.assert_true("`version` INT NOT NULL UNIQUE" in mig_my, "MySQL migration table uses INT for version")
+nox.test.assert_true("`status` TEXT NOT NULL DEFAULT 'APPLIED'" in mig_my, "MySQL migration table has status column")
 
 # 7. Transactional DDL Support
 nox.test.assert_true(d_sqlite.supports_transactional_ddl(), "SQLite supports transactional DDL")
 nox.test.assert_true(d_pg.supports_transactional_ddl(), "PostgreSQL supports transactional DDL")
 nox.test.assert_true(not d_my.supports_transactional_ddl(), "MySQL DDL commits implicitly (non-transactional DDL)")
 
-# 8. Migration Lock Table DDL
-nox.test.assert_true("CREATE TABLE IF NOT EXISTS \"_feather_migration_lock\"" in d_sqlite.migration_lock_table_sql(), "SQLite lock table DDL")
-nox.test.assert_true("CREATE TABLE IF NOT EXISTS `_feather_migration_lock`" in d_my.migration_lock_table_sql(), "MySQL lock table DDL")
+# 8. Migration Lock Table DDL & Row Init
+lock_lite: str = d_sqlite.migration_lock_table_sql()
+nox.test.assert_true("CREATE TABLE IF NOT EXISTS \"_feather_migration_lock\"" in lock_lite, "SQLite lock table DDL")
+nox.test.assert_true("\"timeout_at\" INTEGER NOT NULL DEFAULT 0" in lock_lite, "SQLite lock table has timeout_at")
+
+lock_my: str = d_my.migration_lock_table_sql()
+nox.test.assert_true("CREATE TABLE IF NOT EXISTS `_feather_migration_lock`" in lock_my, "MySQL lock table DDL")
+nox.test.assert_true("`timeout_at` INT NOT NULL DEFAULT 0" in lock_my, "MySQL lock table has timeout_at")
+
+init_lite: str = d_sqlite.init_migration_lock_row_sql()
+nox.test.assert_true("INSERT OR IGNORE INTO \"_feather_migration_lock\"" in init_lite, "SQLite lock row init uses INSERT OR IGNORE")
+
+init_pg: str = d_pg.init_migration_lock_row_sql()
+nox.test.assert_true("ON CONFLICT (\"id\") DO NOTHING" in init_pg, "PostgreSQL lock row init uses ON CONFLICT DO NOTHING")
+
+init_my: str = d_my.init_migration_lock_row_sql()
+nox.test.assert_true("ON DUPLICATE KEY UPDATE `id` = 1" in init_my, "MySQL lock row init uses ON DUPLICATE KEY UPDATE")
 
 print("dialects_test passed")

@@ -21,9 +21,9 @@ Feather makes everyday database work in the [Nox programming language](https://g
 - 🔀 **Upsert Operations:** `session.upsert` with `ON CONFLICT (...) DO UPDATE` / `DO NOTHING` (SQLite/PostgreSQL) and `ON DUPLICATE KEY UPDATE` (MySQL).
 - 🔑 **Composite Primary Keys:** Full multi-column PK support with table-level constraint DDL, `find_by_pk`, `update_by_pk`, and `delete_by_pk` (with composite auto-increment safety).
 - 🔄 **Multi-Dialect Support:** Portable queries across **SQLite**, **PostgreSQL** (`$1..$N` placeholders, `RETURNING`), and **MySQL** (backtick identifier quoting, `INT AUTO_INCREMENT PRIMARY KEY` migration DDL).
-- 💼 **Transaction Unit of Work:** Explicit state-tracked transactions (`IDLE`, `ACTIVE`, `COMMITTED`, `ROLLED_BACK`, `FAILED`) with `s.in_transaction`, `s.is_poisoned` guard blocking operations on compromised sessions, zero-overhead disposal of failed sockets, and tokenized raw SQL transaction detection.
+- 💼 **Transaction Unit of Work:** Explicit state-tracked transactions (`IDLE`, `ACTIVE`, `COMMITTED`, `ROLLED_BACK`, `FAILED`) with `s.in_transaction`, `s.is_poisoned` guard blocking operations on compromised sessions, zero-overhead disposal of failed sockets, and strict whitespace-independent SQL token parsing (`_extract_sql_tokens`).
 - 🏊 **Leased Connection Pooling:** Bounded connection pool (`ConnectionPool`) with monotonic lease tracking, poison connection isolation, configurable liveness check (`ping_on_acquire`), graceful vs force shutdown (`close_graceful()`, `close_force()`), and capacity invariant enforcement (`total = active + idle <= max`).
-- 📦 **Schema Migrations with Concurrency Locks & Dry Runs:** Versioned migrations with `_feather_migration_lock` concurrency control, dry-run previews (`plan_up`, `plan_down`), dialect-aware DDL policy (accounting for MySQL implicit commit), standard `nox.crypto.sha256` tamper protection, deterministic auto-sorting of out-of-order migrations, duplicate version rejection, detection of missing/unknown applied versions, and pre-rollback validation in `migrate_down()`.
+- 📦 **Schema Migrations with Atomic Locking & Zero-Side-Effect Dry Runs:** Versioned migrations with truly atomic single-statement lock acquisition (`_feather_migration_lock`), caller ownership tokens (`owner_token`), stale lock timeout recovery (`timeout_at`), non-transactional DDL state tracking (`RUNNING`, `APPLIED`, `FAILED` for MySQL implicit commits), side-effect-free dry runs (`preview_up`, `preview_down`), standard `nox.crypto.sha256` tamper protection, deterministic auto-sorting of out-of-order migrations, duplicate version rejection, and detection of missing/unknown applied versions.
 - 🔗 **Relationship Loaders & Batched Eager Loading:** Explicit `has_one`, `has_many`, `belongs_to`, and `many_to_many` loaders with `load_has_many_batch`, `load_belongs_to_batch`, `load_has_many_grouped` (`dict[int, list[C]]`), and `load_has_many_grouped_str` (`dict[str, list[C]]` for string & UUID keys) with parameter chunking eliminating N+1 queries.
 - 🖥️ **CLI Migration & Verification Tool:** Run `feather demo`, `feather migrate status`, `feather migrate up`, and `feather migrate down`.
 - ⚡ **Zero External Dependencies:** Built 100% on Nox standard library modules (`nox.db`, `nox.sqlite`, `nox.postgres`, `nox.mysql`, `nox.strings`, `nox.crypto`, `nox.test`, `nox.os`).
@@ -221,7 +221,10 @@ m2: Migration = migration(
 
 mgr: MigrationManager = MigrationManager(s, [m1, m2])
 
-# Apply all pending migrations in isolated transactions
+# Preview pending SQL statements without acquiring locks or touching the database
+dry_run_sqls: list[str] = mgr.preview_up()
+
+# Apply all pending migrations under atomic concurrency lock
 applied: int = mgr.migrate_up()
 print("Applied " + str(applied) + " migrations.")
 

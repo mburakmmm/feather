@@ -1,72 +1,145 @@
-# tests/integration/migration_lock_test.nox — Integration tests for migration concurrency locking and dry-run execution plan.
+# tests/integration/migration_lock_test.nox — Multi-connection concurrency locking, ownership, stale recovery, and dry-run tests.
 
 import nox.test
 import feather
-from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration, val_int, val_str, Value
+from feather import Session, create_session, sqlite_dialect, Migration, MigrationManager, migration, val_int, val_str, Value
 import errors
 from errors import MigrationError
 import nox.db
 from nox.db import Row
+import nox.sqlite
 
-s: Session = open_sqlite_memory()
+# Use shared-memory SQLite URI so independent connection handles operate concurrently on the same database
+c1: nox.sqlite.Connection = nox.sqlite.open("file:memdb_shared_lock?mode=memory&cache=shared")
+c2: nox.sqlite.Connection = nox.sqlite.open("file:memdb_shared_lock?mode=memory&cache=shared")
+
+s1: Session = create_session(c1, sqlite_dialect(), True)
+s2: Session = create_session(c2, sqlite_dialect(), True)
 
 m1: Migration = migration(1, "create_alpha", ["CREATE TABLE alpha_lock (id INTEGER PRIMARY KEY);"], ["DROP TABLE alpha_lock;"])
 m2: Migration = migration(2, "create_beta", ["CREATE TABLE beta_lock (id INTEGER PRIMARY KEY);"], ["DROP TABLE beta_lock;"])
 
-mgr1: MigrationManager = MigrationManager(s, [m1, m2])
-mgr2: MigrationManager = MigrationManager(s, [m1, m2])
+mgr1: MigrationManager = MigrationManager(s1, [m1, m2])
+mgr2: MigrationManager = MigrationManager(s2, [m1, m2])
 
 # -------------------------------------------------------------
-# Test 1: Dry-run execution plan (plan_up)
+# Test 1: Side-effect-free dry-run execution plan (preview_up)
 # -------------------------------------------------------------
-plan_sqls: list[str] = mgr1.plan_up()
-nox.test.assert_eq_int(len(plan_sqls), 2, "plan_up returns 2 SQL statements")
-nox.test.assert_true("CREATE TABLE alpha_lock" in plan_sqls[0], "First plan statement creates alpha_lock")
-nox.test.assert_true("CREATE TABLE beta_lock" in plan_sqls[1], "Second plan statement creates beta_lock")
+plan_sqls: list[str] = mgr1.preview_up()
+nox.test.assert_eq_int(len(plan_sqls), 2, "preview_up returns 2 SQL statements")
+nox.test.assert_true("CREATE TABLE alpha_lock" in plan_sqls[0], "First preview statement creates alpha_lock")
+nox.test.assert_true("CREATE TABLE beta_lock" in plan_sqls[1], "Second preview statement creates beta_lock")
 
-# Verify dry run did NOT apply the migration
-tables_before: list[Row] = s.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", [])
-nox.test.assert_eq_int(len(tables_before), 0, "Dry run plan_up did not modify database tables")
+# Verify dry run did NOT create any tables or lock entries in the database
+empty_p: list[Value] = []
+tables_before: list[Row] = s1.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", empty_p)
+nox.test.assert_eq_int(len(tables_before), 0, "preview_up did not modify database tables")
+
+lock_tables_before: list[Row] = s1.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='_feather_migration_lock'", empty_p)
+nox.test.assert_eq_int(len(lock_tables_before), 0, "preview_up did not create lock table")
 
 # -------------------------------------------------------------
-# Test 2: Concurrency Lock Acquisition & Conflict
+# Test 2: True Multi-Connection Concurrency Lock & Ownership Token
 # -------------------------------------------------------------
-mgr1.acquire_lock("runner_alpha")
+token1: str = mgr1.acquire_lock("worker_1")
+nox.test.assert_eq_str(token1, "worker_1", "Worker 1 acquired lock with requested token")
 
+# Independent connection s2 / mgr2 attempts to acquire lock concurrently
 lock_conflict: bool = False
 try:
-    mgr2.acquire_lock("runner_beta")
+    mgr2.acquire_lock("worker_2")
 except MigrationError as me_lock:
     lock_conflict = True
+    nox.test.assert_true("worker_1" in me_lock.message, "Error identifies worker_1 as current lock holder")
 
-nox.test.assert_true(lock_conflict, "Concurrent lock acquisition rejected while runner_alpha holds the lock")
+nox.test.assert_true(lock_conflict, "Concurrent lock acquisition rejected across independent connection handles")
 
-# Release lock and verify runner_beta can now acquire
-mgr1.release_lock()
-mgr2.acquire_lock("runner_beta")
-mgr2.release_lock()
+# Worker 2 attempts to release Worker 1's lock (ownership mismatch protection)
+ownership_mismatch: bool = False
+try:
+    mgr2.release_lock("worker_2")
+except MigrationError as me_rel:
+    ownership_mismatch = True
+    nox.test.assert_true("ownership mismatch" in me_rel.message, "Ownership mismatch detected on cross-process release attempt")
+
+nox.test.assert_true(ownership_mismatch, "Worker 2 forbidden from releasing Worker 1's lock")
+
+# Worker 1 releases cleanly
+mgr1.release_lock(token1)
+
+# Now Worker 2 acquires lock cleanly
+token2: str = mgr2.acquire_lock("worker_2")
+nox.test.assert_eq_str(token2, "worker_2", "Worker 2 acquired lock after Worker 1 released")
+mgr2.release_lock(token2)
 
 # -------------------------------------------------------------
-# Test 3: migrate_up automatically acquires and releases lock
+# Test 3: Stale Lock Recovery via timeout_at
+# -------------------------------------------------------------
+token_stale: str = mgr1.acquire_lock("worker_abandoned", 10)
+
+# Simulate expired/stale lock by explicitly setting timeout_at to past epoch (1)
+s1.execute_raw("UPDATE _feather_migration_lock SET timeout_at = 1 WHERE id = 1", empty_p)
+
+# Worker 2 should now atomically recover the stale lock
+token_recovered: str = mgr2.acquire_lock("worker_recoverer", 300)
+nox.test.assert_eq_str(token_recovered, "worker_recoverer", "Worker 2 recovered stale lock")
+
+# Verify database reflects new owner
+rows_check: list[Row] = s1.query_raw("SELECT locked_by, is_locked FROM _feather_migration_lock WHERE id = 1", empty_p)
+nox.test.assert_eq_str(rows_check[0].get_str(0), "worker_recoverer", "Database reflects new lock owner")
+nox.test.assert_eq_int(rows_check[0].get_int(1), 1, "Lock remains actively locked under recoverer")
+
+mgr2.release_lock(token_recovered)
+
+# -------------------------------------------------------------
+# Test 4: Multi-Connection migrate_up and preview_down
 # -------------------------------------------------------------
 count: int = mgr1.migrate_up()
 nox.test.assert_eq_int(count, 2, "Applied 2 migrations under automatic concurrency lock")
 
-# Verify lock was released upon completion
-rows_lock: list[Row] = s.query_raw("SELECT is_locked FROM _feather_migration_lock WHERE id = 1", [])
+# Verify connection s2 observes the newly created tables from s1
+tables_s2: list[Row] = s2.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", empty_p)
+nox.test.assert_eq_int(len(tables_s2), 1, "Independent connection s2 observes table created by mgr1")
+
+# Verify lock is released in database
+rows_lock: list[Row] = s2.query_raw("SELECT is_locked FROM _feather_migration_lock WHERE id = 1", empty_p)
 nox.test.assert_eq_int(rows_lock[0].get_int(0), 0, "Lock is released after migrate_up finishes")
 
-# -------------------------------------------------------------
-# Test 4: Dry-run execution plan (plan_down)
-# -------------------------------------------------------------
-down_sqls: list[str] = mgr1.plan_down(0)
-nox.test.assert_eq_int(len(down_sqls), 2, "plan_down returns 2 rollback statements")
+# Dry-run down
+down_sqls: list[str] = mgr2.preview_down(0)
+nox.test.assert_eq_int(len(down_sqls), 2, "preview_down returns 2 rollback statements")
 nox.test.assert_true("DROP TABLE beta_lock" in down_sqls[0], "First down statement rolls back beta_lock")
 nox.test.assert_true("DROP TABLE alpha_lock" in down_sqls[1], "Second down statement rolls back alpha_lock")
 
-# Tables should still exist after plan_down
-tables_after_plan: list[Row] = s.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", [])
-nox.test.assert_eq_int(len(tables_after_plan), 1, "plan_down did not drop tables")
+# Tables still exist after dry-run preview_down
+tables_after_preview: list[Row] = s1.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", empty_p)
+nox.test.assert_eq_int(len(tables_after_preview), 1, "preview_down did not drop tables")
 
-s.close()
+# -------------------------------------------------------------
+# Test 5: Failed State Isolation
+# -------------------------------------------------------------
+# Insert a failed migration record to test non-transactional DDL failure protection
+s1.execute_raw("INSERT INTO _feather_migrations (version, name, checksum, applied_at, status) VALUES (99, 'failed_step', 'sum', 'now', 'FAILED')", empty_p)
+
+failed_detected: bool = False
+try:
+    mgr1.get_applied_versions()
+except MigrationError as me_failed:
+    failed_detected = True
+    nox.test.assert_true("FAILED state" in me_failed.message, "MigrationError reports FAILED state")
+
+nox.test.assert_true(failed_detected, "Migration manager aborts when a migration is in FAILED state")
+
+# Cleanup the failed test row
+s1.execute_raw("DELETE FROM _feather_migrations WHERE version = 99", empty_p)
+
+# Migrate down cleanly
+down_count: int = mgr2.migrate_down(0)
+nox.test.assert_eq_int(down_count, 2, "mgr2 successfully rolled back 2 migrations")
+
+tables_after_down: list[Row] = s1.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", empty_p)
+nox.test.assert_eq_int(len(tables_after_down), 0, "alpha_lock dropped after migrate_down")
+
+s1.close()
+s2.close()
 print("migration_lock_test passed")

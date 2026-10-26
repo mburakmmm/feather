@@ -12,6 +12,12 @@ import nox.db
 from nox.db import Row
 
 import nox.crypto
+import nox.time
+
+def _current_timestamp() -> int:
+    t: nox.time.DateTime = nox.time.now()
+    days: int = (t.year - 2020) * 365 + (t.month * 31) + t.day
+    return (days * 86400) + (t.hour * 3600) + (t.minute * 60) + t.second
 
 def compute_migration_checksum(m: Migration) -> str:
     combined: str = str(m.version) + ":" + m.name + ":UP:"
@@ -114,10 +120,12 @@ def _validate_and_sort_migrations(migs: list[Migration]) -> list[Migration]:
 class MigrationManager:
     session: Session
     migrations: list[Migration]
+    current_lock_token: str
 
     def __init__(self: MigrationManager, session: Session, migrations: list[Migration]) -> None:
         self.session = session
         self.migrations = _validate_and_sort_migrations(migrations)
+        self.current_lock_token = ""
 
     def init_table(self: MigrationManager) -> None:
 
@@ -128,13 +136,17 @@ class MigrationManager:
         lock_sql: str = self.session.dialect.migration_lock_table_sql()
         self.session.execute_raw(lock_sql, empty_params)
 
+        init_row_sql: str = self.session.dialect.init_migration_lock_row_sql()
+        self.session.execute_raw(init_row_sql, empty_params)
+
     def verify_checksums(self: MigrationManager) -> None:
 
         self.init_table()
         q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
         q_ver: str = self.session.dialect.quote_identifier("version")
         q_check: str = self.session.dialect.quote_identifier("checksum")
-        sql: str = "SELECT " + q_ver + ", " + q_check + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
+        q_status: str = self.session.dialect.quote_identifier("status")
+        sql: str = "SELECT " + q_ver + ", " + q_check + ", " + q_status + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
         empty_params: list[Value] = []
         rows: list[Row] = self.session.query_raw(sql, empty_params)
 
@@ -145,6 +157,13 @@ class MigrationManager:
         while r_idx < len(rows):
             v: int = rows[r_idx].get_int(0)
             rec_sum: str = rows[r_idx].get_str(1)
+            st: str = rows[r_idx].get_str(2)
+
+            if st == "FAILED":
+                raise MigrationError("migration " + str(v) + " is in FAILED state due to partial non-transactional execution: manual schema resolution or rollback required before proceeding")
+            if st == "RUNNING":
+                raise MigrationError("migration " + str(v) + " is in RUNNING state (in-flight or crashed non-transactional execution): manual inspection required")
+
             found_migration: bool = False
             m_idx: int = 0
             while m_idx < len(self.migrations):
@@ -189,13 +208,20 @@ class MigrationManager:
         self.init_table()
         q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
         q_ver: str = self.session.dialect.quote_identifier("version")
-        sql: str = "SELECT " + q_ver + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
+        q_status: str = self.session.dialect.quote_identifier("status")
+        sql: str = "SELECT " + q_ver + ", " + q_status + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
         empty_params: list[Value] = []
         rows: list[Row] = self.session.query_raw(sql, empty_params)
         versions: list[int] = []
         i: int = 0
         while i < len(rows):
-            versions.append(rows[i].get_int(0))
+            v: int = rows[i].get_int(0)
+            st: str = rows[i].get_str(1)
+            if st == "FAILED":
+                raise MigrationError("migration " + str(v) + " is in FAILED state due to partial non-transactional execution: manual schema resolution or rollback required before proceeding")
+            if st == "RUNNING":
+                raise MigrationError("migration " + str(v) + " is in RUNNING state (in-flight or crashed non-transactional execution): manual inspection required")
+            versions.append(v)
             i = i + 1
         return versions
 
@@ -227,73 +253,165 @@ class MigrationManager:
             i = i + 1
         return pending
 
-    def acquire_lock(self: MigrationManager, locked_by: str = "feather") -> None:
+    def acquire_lock(self: MigrationManager, locked_by: str = "", timeout_seconds: int = 300) -> str:
 
         self.init_table()
+        now_ts: int = _current_timestamp()
+        timeout_at: int = now_ts + timeout_seconds
+
+        token: str = locked_by
+        if token == "":
+            token = "runner_" + str(self.session.lease_id) + "_" + str(now_ts)
+
         q_table: str = self.session.dialect.quote_identifier("_feather_migration_lock")
         q_id: str = self.session.dialect.quote_identifier("id")
         q_locked: str = self.session.dialect.quote_identifier("is_locked")
         q_time: str = self.session.dialect.quote_identifier("locked_at")
         q_by: str = self.session.dialect.quote_identifier("locked_by")
+        q_timeout: str = self.session.dialect.quote_identifier("timeout_at")
 
-        check_sql: str = "SELECT " + q_locked + ", " + q_by + " FROM " + q_table + " WHERE " + q_id + " = 1"
+        ph1: str = self.session.dialect.placeholder(0)
+        ph2: str = self.session.dialect.placeholder(1)
+        ph3: str = self.session.dialect.placeholder(2)
+        ph4: str = self.session.dialect.placeholder(3)
+
+        up_sql: str = "UPDATE " + q_table + " SET " + q_locked + " = 1, " + q_time + " = " + ph1 + ", " + q_by + " = " + ph2 + ", " + q_timeout + " = " + ph3 + " WHERE " + q_id + " = 1 AND (" + q_locked + " = 0 OR " + q_timeout + " < " + ph4 + ")"
+        up_params: list[Value] = [val_str("now"), val_str(token), val_int(timeout_at), val_int(now_ts)]
+        affected: int = self.session.execute_raw(up_sql, up_params)
+
+        if affected > 0:
+            self.current_lock_token = token
+            return token
+
+        check_sql: str = "SELECT " + q_by + ", " + q_time + ", " + q_timeout + " FROM " + q_table + " WHERE " + q_id + " = 1"
         empty_p: list[Value] = []
         rows: list[Row] = self.session.query_raw(check_sql, empty_p)
+        holder: str = "unknown"
+        if len(rows) > 0:
+            holder = rows[0].get_str(0)
+        raise MigrationError("migration lock is already held by another process or application instance (locked_by: " + holder + ")")
 
-        if len(rows) == 0:
-            ph1: str = self.session.dialect.placeholder(0)
-            ph2: str = self.session.dialect.placeholder(1)
-            ph3: str = self.session.dialect.placeholder(2)
-            ph4: str = self.session.dialect.placeholder(3)
-            ins_sql: str = "INSERT INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ", " + ph4 + ")"
-            ins_params: list[Value] = [val_int(1), val_int(1), val_str("now"), val_str(locked_by)]
-            self.session.execute_raw(ins_sql, ins_params)
-        else:
-            is_locked: int = rows[0].get_int(0)
-            holder: str = rows[0].get_str(1)
-            if is_locked == 1:
-                raise MigrationError("migration lock is already held by another process or application instance (locked_by: " + holder + ")")
-            up_sql: str = "UPDATE " + q_table + " SET " + q_locked + " = 1, " + q_time + " = " + self.session.dialect.placeholder(0) + ", " + q_by + " = " + self.session.dialect.placeholder(1) + " WHERE " + q_id + " = 1 AND " + q_locked + " = 0"
-            up_params: list[Value] = [val_str("now"), val_str(locked_by)]
-            affected: int = self.session.execute_raw(up_sql, up_params)
-            if affected == 0:
-                raise MigrationError("migration lock is already held by another process or application instance (concurrent acquisition conflict)")
+    def release_lock(self: MigrationManager, owner_token: str = "") -> None:
 
-    def release_lock(self: MigrationManager) -> None:
+        token: str = owner_token
+        if token == "":
+            token = self.current_lock_token
+        if token == "":
+            return
 
         self.init_table()
         q_table: str = self.session.dialect.quote_identifier("_feather_migration_lock")
         q_id: str = self.session.dialect.quote_identifier("id")
         q_locked: str = self.session.dialect.quote_identifier("is_locked")
         q_by: str = self.session.dialect.quote_identifier("locked_by")
+        q_timeout: str = self.session.dialect.quote_identifier("timeout_at")
 
-        rel_sql: str = "UPDATE " + q_table + " SET " + q_locked + " = 0, " + q_by + " = " + self.session.dialect.placeholder(0) + " WHERE " + q_id + " = 1"
-        rel_params: list[Value] = [val_str("")]
-        self.session.execute_raw(rel_sql, rel_params)
+        ph1: str = self.session.dialect.placeholder(0)
+        rel_sql: str = "UPDATE " + q_table + " SET " + q_locked + " = 0, " + q_by + " = '', " + q_timeout + " = 0 WHERE " + q_id + " = 1 AND " + q_by + " = " + ph1
+        rel_params: list[Value] = [val_str(token)]
+        affected: int = self.session.execute_raw(rel_sql, rel_params)
 
-    def plan_up(self: MigrationManager) -> list[str]:
+        if affected == 0:
+            check_sql: str = "SELECT " + q_locked + ", " + q_by + " FROM " + q_table + " WHERE " + q_id + " = 1"
+            empty_p: list[Value] = []
+            rows: list[Row] = self.session.query_raw(check_sql, empty_p)
+            if len(rows) > 0:
+                is_l: int = rows[0].get_int(0)
+                holder: str = rows[0].get_str(1)
+                if is_l == 1 and holder != token:
+                    raise MigrationError("cannot release migration lock: lock ownership mismatch (requested token: '" + token + "', current holder: '" + holder + "')")
 
-        self.init_table()
-        self.verify_checksums()
-        pending: list[Migration] = self.get_pending_migrations()
+        self.current_lock_token = ""
+
+    def preview_up(self: MigrationManager) -> list[str]:
+
+        applied: list[int] = []
+        try:
+            q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
+            q_ver: str = self.session.dialect.quote_identifier("version")
+            q_check: str = self.session.dialect.quote_identifier("checksum")
+            q_status: str = self.session.dialect.quote_identifier("status")
+            sql: str = "SELECT " + q_ver + ", " + q_check + ", " + q_status + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
+            empty_p: list[Value] = []
+            rows: list[Row] = self.session.query_raw(sql, empty_p)
+            r_idx: int = 0
+            while r_idx < len(rows):
+                v: int = rows[r_idx].get_int(0)
+                rec_sum: str = rows[r_idx].get_str(1)
+                st: str = rows[r_idx].get_str(2)
+                if st == "FAILED":
+                    raise MigrationError("migration " + str(v) + " is in FAILED state due to partial non-transactional execution: manual schema resolution or rollback required before proceeding")
+                if st == "RUNNING":
+                    raise MigrationError("migration " + str(v) + " is in RUNNING state (in-flight or crashed non-transactional execution): manual inspection required")
+
+                found_m: bool = False
+                m_idx: int = 0
+                while m_idx < len(self.migrations):
+                    m: Migration = self.migrations[m_idx]
+                    if m.version == v:
+                        found_m = True
+                        curr_sum: str = m.get_checksum()
+                        if rec_sum != "" and rec_sum != curr_sum:
+                            if len(rec_sum) == 8 and rec_sum == compute_legacy_migration_checksum(m):
+                                pass
+                            else:
+                                raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded checksum " + rec_sum + ", but code checksum is " + curr_sum)
+                    m_idx = m_idx + 1
+                if not found_m:
+                    raise MigrationError("unknown applied migration version in database: " + str(v) + " (migration missing from codebase)")
+
+                applied.append(v)
+                r_idx = r_idx + 1
+        except MigrationError as me:
+            raise me
+        except Exception as _not_found:
+            pass
+
         sqls: list[str] = []
         i: int = 0
-        while i < len(pending):
-            m: Migration = pending[i]
-            s_idx: int = 0
-            while s_idx < len(m.up_sqls):
-                sqls.append(m.up_sqls[s_idx])
-                s_idx = s_idx + 1
+        while i < len(self.migrations):
+            m: Migration = self.migrations[i]
+            is_app: bool = False
+            j: int = 0
+            while j < len(applied):
+                if applied[j] == m.version:
+                    is_app = True
+                j = j + 1
+            if not is_app:
+                s_idx: int = 0
+                while s_idx < len(m.up_sqls):
+                    sqls.append(m.up_sqls[s_idx])
+                    s_idx = s_idx + 1
             i = i + 1
         return sqls
 
-    def plan_down(self: MigrationManager, target_version: int) -> list[str]:
+    def preview_down(self: MigrationManager, target_version: int) -> list[str]:
 
-        self.init_table()
-        self.verify_checksums()
-        applied: list[int] = self.get_applied_versions()
+        applied: list[int] = []
+        try:
+            q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
+            q_ver: str = self.session.dialect.quote_identifier("version")
+            q_check: str = self.session.dialect.quote_identifier("checksum")
+            q_status: str = self.session.dialect.quote_identifier("status")
+            sql: str = "SELECT " + q_ver + ", " + q_check + ", " + q_status + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
+            empty_p: list[Value] = []
+            rows: list[Row] = self.session.query_raw(sql, empty_p)
+            r_idx: int = 0
+            while r_idx < len(rows):
+                v: int = rows[r_idx].get_int(0)
+                st: str = rows[r_idx].get_str(2)
+                if st == "FAILED":
+                    raise MigrationError("migration " + str(v) + " is in FAILED state due to partial non-transactional execution: manual schema resolution or rollback required before proceeding")
+                if st == "RUNNING":
+                    raise MigrationError("migration " + str(v) + " is in RUNNING state (in-flight or crashed non-transactional execution): manual inspection required")
+                applied.append(v)
+                r_idx = r_idx + 1
+        except MigrationError as me:
+            raise me
+        except Exception as _not_found:
+            pass
+
         sqls: list[str] = []
-
         idx: int = len(self.migrations) - 1
         while idx >= 0:
             m: Migration = self.migrations[idx]
@@ -312,9 +430,15 @@ class MigrationManager:
             idx = idx - 1
         return sqls
 
+    def plan_up(self: MigrationManager) -> list[str]:
+        return self.preview_up()
+
+    def plan_down(self: MigrationManager, target_version: int) -> list[str]:
+        return self.preview_down(target_version)
+
     def migrate_up(self: MigrationManager) -> int:
 
-        self.acquire_lock()
+        token: str = self.acquire_lock()
         try:
             self.init_table()
             self.verify_checksums()
@@ -339,14 +463,16 @@ class MigrationManager:
                         q_name: str = self.session.dialect.quote_identifier("name")
                         q_check: str = self.session.dialect.quote_identifier("checksum")
                         q_time: str = self.session.dialect.quote_identifier("applied_at")
+                        q_status: str = self.session.dialect.quote_identifier("status")
 
                         ph1: str = self.session.dialect.placeholder(0)
                         ph2: str = self.session.dialect.placeholder(1)
                         ph3: str = self.session.dialect.placeholder(2)
                         ph4: str = self.session.dialect.placeholder(3)
+                        ph5: str = self.session.dialect.placeholder(4)
 
-                        record_sql: str = "INSERT INTO " + q_table + " (" + q_ver + ", " + q_name + ", " + q_check + ", " + q_time + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ", " + ph4 + ")"
-                        rec_params: list[Value] = [val_int(m.version), val_str(m.name), val_str(m.get_checksum()), val_str("now")]
+                        record_sql: str = "INSERT INTO " + q_table + " (" + q_ver + ", " + q_name + ", " + q_check + ", " + q_time + ", " + q_status + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ", " + ph4 + ", " + ph5 + ")"
+                        rec_params: list[Value] = [val_int(m.version), val_str(m.name), val_str(m.get_checksum()), val_str("now"), val_str("APPLIED")]
                         self.session.execute_raw(record_sql, rec_params)
 
                         tx.commit()
@@ -356,6 +482,23 @@ class MigrationManager:
                         raise MigrationError("failed applying migration " + str(m.version) + " (" + m.name + "): " + e.message)
                 else:
                     # Non-transactional DDL engine (e.g. MySQL implicit commits)
+                    q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
+                    q_ver: str = self.session.dialect.quote_identifier("version")
+                    q_name: str = self.session.dialect.quote_identifier("name")
+                    q_check: str = self.session.dialect.quote_identifier("checksum")
+                    q_time: str = self.session.dialect.quote_identifier("applied_at")
+                    q_status: str = self.session.dialect.quote_identifier("status")
+
+                    ph1: str = self.session.dialect.placeholder(0)
+                    ph2: str = self.session.dialect.placeholder(1)
+                    ph3: str = self.session.dialect.placeholder(2)
+                    ph4: str = self.session.dialect.placeholder(3)
+                    ph5: str = self.session.dialect.placeholder(4)
+
+                    running_sql: str = "INSERT INTO " + q_table + " (" + q_ver + ", " + q_name + ", " + q_check + ", " + q_time + ", " + q_status + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ", " + ph4 + ", " + ph5 + ")"
+                    run_params: list[Value] = [val_int(m.version), val_str(m.name), val_str(m.get_checksum()), val_str("now"), val_str("RUNNING")]
+                    self.session.execute_raw(running_sql, run_params)
+
                     try:
                         s_idx: int = 0
                         while s_idx < len(m.up_sqls):
@@ -363,34 +506,30 @@ class MigrationManager:
                             self.session.execute_raw(m.up_sqls[s_idx], empty_p)
                             s_idx = s_idx + 1
 
-                        q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
-                        q_ver: str = self.session.dialect.quote_identifier("version")
-                        q_name: str = self.session.dialect.quote_identifier("name")
-                        q_check: str = self.session.dialect.quote_identifier("checksum")
-                        q_time: str = self.session.dialect.quote_identifier("applied_at")
-
-                        ph1: str = self.session.dialect.placeholder(0)
-                        ph2: str = self.session.dialect.placeholder(1)
-                        ph3: str = self.session.dialect.placeholder(2)
-                        ph4: str = self.session.dialect.placeholder(3)
-
-                        record_sql: str = "INSERT INTO " + q_table + " (" + q_ver + ", " + q_name + ", " + q_check + ", " + q_time + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ", " + ph4 + ")"
-                        rec_params: list[Value] = [val_int(m.version), val_str(m.name), val_str(m.get_checksum()), val_str("now")]
-                        self.session.execute_raw(record_sql, rec_params)
+                        upd_sql: str = "UPDATE " + q_table + " SET " + q_status + " = " + ph1 + " WHERE " + q_ver + " = " + ph2
+                        self.session.execute_raw(upd_sql, [val_str("APPLIED"), val_int(m.version)])
                         count = count + 1
                     except Exception as e_non_tx:
+                        fail_sql: str = "UPDATE " + q_table + " SET " + q_status + " = " + ph1 + " WHERE " + q_ver + " = " + ph2
+                        try:
+                            self.session.execute_raw(fail_sql, [val_str("FAILED"), val_int(m.version)])
+                        except Exception as _ignored:
+                            pass
                         raise MigrationError("failed applying non-transactional migration " + str(m.version) + " (" + m.name + "): DDL statements in " + self.session.dialect.name + " may have partially executed due to implicit commits: " + e_non_tx.message)
                 i = i + 1
 
-            self.release_lock()
+            self.release_lock(token)
             return count
         except Exception as e_outer:
-            self.release_lock()
+            try:
+                self.release_lock(token)
+            except Exception as _ignored:
+                pass
             raise e_outer
 
     def migrate_down(self: MigrationManager, target_version: int) -> int:
 
-        self.acquire_lock()
+        token: str = self.acquire_lock()
         try:
             self.init_table()
             self.verify_checksums()
@@ -450,10 +589,13 @@ class MigrationManager:
                                 raise MigrationError("failed rolling back non-transactional migration " + str(m.version) + ": DDL statements in " + self.session.dialect.name + " may have partially executed: " + e_non_tx.message)
                 idx = idx - 1
 
-            self.release_lock()
+            self.release_lock(token)
             return count
         except Exception as e_outer:
-            self.release_lock()
+            try:
+                self.release_lock(token)
+            except Exception as _ignored:
+                pass
             raise e_outer
 
     def status(self: MigrationManager) -> list[str]:

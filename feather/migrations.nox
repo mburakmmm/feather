@@ -1,2 +1,2 @@
 import migrations
-from migrations import Migration, MigrationManager, migration, compute_migration_checksum
+from migrations import Migration, MigrationManager, migration, compute_migration_checksum, compute_legacy_migration_checksum

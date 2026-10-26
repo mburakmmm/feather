@@ -59,6 +59,23 @@ def wrap_db_connection(conn: DbConnection) -> FeatherConn:
         conn.close()
     return FeatherConn(_prep, _exec, _query, _close)
 
+def _extract_sql_tokens(sql: str) -> list[str]:
+    tokens: list[str] = []
+    curr: str = ""
+    i: int = 0
+    while i < len(sql):
+        c: str = sql[i]
+        if c == " " or c == "\t" or c == "\n" or c == "\r" or c == ";":
+            if len(curr) > 0:
+                tokens.append(curr)
+                curr = ""
+        else:
+            curr = curr + c
+        i = i + 1
+    if len(curr) > 0:
+        tokens.append(curr)
+    return tokens
+
 class Session:
     conn: FeatherConn
     dialect: Dialect
@@ -102,11 +119,10 @@ class Session:
 
     def execute_raw(self, sql: str, params: list[Value]) -> int:
 
-        trimmed: str = nox.strings.upper(nox.strings.trim(sql))
-        if nox.strings.ends_with(trimmed, ";"):
-            trimmed = nox.strings.trim(trimmed[0:len(trimmed) - 1])
+        upper_sql: str = nox.strings.upper(sql)
+        tokens: list[str] = _extract_sql_tokens(upper_sql)
 
-        is_cleanup: bool = (trimmed == "ROLLBACK")
+        is_cleanup: bool = (len(tokens) > 0 and tokens[0] == "ROLLBACK")
         self._ensure_open(is_cleanup)
         stmt: Statement = self.conn.prepare(sql)
         i: int = 0
@@ -115,7 +131,6 @@ class Session:
             i = i + 1
         affected: int = stmt.execute()
 
-        tokens: list[str] = nox.strings.split(trimmed, " ")
         first_token: str = ""
         second_token: str = ""
         if len(tokens) > 0:
