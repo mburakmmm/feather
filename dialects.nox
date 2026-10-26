@@ -209,12 +209,13 @@ class Dialect:
         q_locked: str = self.quote_identifier("is_locked")
         q_time: str = self.quote_identifier("locked_at")
         q_by: str = self.quote_identifier("locked_by")
+        q_token: str = self.quote_identifier("owner_token")
         q_timeout: str = self.quote_identifier("timeout_at")
 
         if self.kind == DIALECT_SQLITE or self.kind == DIALECT_POSTGRES:
-            return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " INTEGER PRIMARY KEY, " + q_locked + " INTEGER NOT NULL, " + q_time + " TEXT NOT NULL, " + q_by + " TEXT NOT NULL, " + q_timeout + " INTEGER NOT NULL DEFAULT 0)"
+            return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " INTEGER PRIMARY KEY, " + q_locked + " INTEGER NOT NULL, " + q_time + " TEXT NOT NULL, " + q_by + " TEXT NOT NULL, " + q_token + " TEXT NOT NULL DEFAULT '', " + q_timeout + " INTEGER NOT NULL DEFAULT 0)"
         if self.kind == DIALECT_MYSQL:
-            return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " INT PRIMARY KEY, " + q_locked + " INT NOT NULL, " + q_time + " TEXT NOT NULL, " + q_by + " TEXT NOT NULL, " + q_timeout + " INT NOT NULL DEFAULT 0)"
+            return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " INT PRIMARY KEY, " + q_locked + " INT NOT NULL, " + q_time + " TEXT NOT NULL, " + q_by + " TEXT NOT NULL, " + q_token + " VARCHAR(64) NOT NULL DEFAULT '', " + q_timeout + " INT NOT NULL DEFAULT 0)"
         raise DialectError("unknown dialect kind: " + str(self.kind))
 
     def init_migration_lock_row_sql(self: Dialect) -> str:
@@ -224,15 +225,32 @@ class Dialect:
         q_locked: str = self.quote_identifier("is_locked")
         q_time: str = self.quote_identifier("locked_at")
         q_by: str = self.quote_identifier("locked_by")
+        q_token: str = self.quote_identifier("owner_token")
         q_timeout: str = self.quote_identifier("timeout_at")
 
         if self.kind == DIALECT_SQLITE:
-            return "INSERT OR IGNORE INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_timeout + ") VALUES (1, 0, '', '', 0)"
+            return "INSERT OR IGNORE INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_token + ", " + q_timeout + ") VALUES (1, 0, '', '', '', 0)"
         if self.kind == DIALECT_POSTGRES:
-            return "INSERT INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_timeout + ") VALUES (1, 0, '', '', 0) ON CONFLICT (" + q_id + ") DO NOTHING"
+            return "INSERT INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_token + ", " + q_timeout + ") VALUES (1, 0, '', '', '', 0) ON CONFLICT (" + q_id + ") DO NOTHING"
         if self.kind == DIALECT_MYSQL:
-            return "INSERT INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_timeout + ") VALUES (1, 0, '', '', 0) ON DUPLICATE KEY UPDATE " + q_id + " = 1"
+            return "INSERT INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_token + ", " + q_timeout + ") VALUES (1, 0, '', '', '', 0) ON DUPLICATE KEY UPDATE " + q_id + " = 1"
         raise DialectError("unknown dialect kind: " + str(self.kind))
+
+    def advisory_lock_sql(self: Dialect, key: str) -> str:
+
+        if self.kind == DIALECT_POSTGRES:
+            return "SELECT pg_try_advisory_lock(2147483640)"
+        if self.kind == DIALECT_MYSQL:
+            return "SELECT GET_LOCK('_feather_migration_lock', 0)"
+        return ""
+
+    def advisory_unlock_sql(self: Dialect, key: str) -> str:
+
+        if self.kind == DIALECT_POSTGRES:
+            return "SELECT pg_advisory_unlock(2147483640)"
+        if self.kind == DIALECT_MYSQL:
+            return "SELECT RELEASE_LOCK('_feather_migration_lock')"
+        return ""
 
     def boolean_sql(self: Dialect, b: bool) -> str:
 

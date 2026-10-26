@@ -72,3 +72,15 @@
   5. For non-transactional DDL engines (MySQL), track execution states (`RUNNING`, `APPLIED`, `FAILED`) in `_feather_migrations`, preventing corrupted retries of partially applied DDL.
   6. Provide zero-side-effect dry runs (`preview_up`, `preview_down`).
 - **Consequences:** 100% database-engine atomicity, cross-runner ownership protection, resilient stale-lock recovery, and schema protection against MySQL non-transactional DDL failures.
+
+## ADR 012: Cryptographic Token Uniqueness, Active Lease Fencing, and Metadata Table Self-Upgrade
+
+- **Context:** User-provided worker names (`locked_by`) or sequential IDs are not safe lock ownership tokens. Long-running migrations run the risk of lease expiration mid-execution, enabling a competing process to steal the lock and execute concurrent DDL. Additionally, upgrading Feather on existing databases fails if metadata tables (`_feather_migration_lock`, `_feather_migrations`) lack newly introduced columns.
+- **Decision:**
+  1. Decouple descriptive `locked_by` labels from secret ownership tokens (`owner_token`). Generate unguessable RFC-4122 v4 UUIDs using `nox.crypto.sha256` seeded by `nox.random.randint` and `nox.time.now()`.
+  2. Implement active step-level lease fencing (`refresh_lock()`) before every migration execution step; immediately abort if the lease was lost or reclaimed.
+  3. Integrate server-managed advisory locks (`pg_try_advisory_lock`, `GET_LOCK`) for PostgreSQL and MySQL.
+  4. Implement `_ensure_metadata_columns()` in `init_table()` using zero-cost `LIMIT 0` probes to automatically upgrade legacy metadata tables via non-destructive `ALTER TABLE`.
+  5. Refine dry-run error handling with `_is_table_not_found_error()` to ensure fatal connection drops or permission rejections are properly propagated.
+  6. Provide administrative recovery methods (`repair_migration_status`, `drop_migration_record`) for manual operator intervention on non-transactional DDL states.
+- **Consequences:** Eliminates lease hijacking, prevents split-brain execution on slow migrations, ensures seamless backward compatibility across versions, and exposes explicit administrative recovery tools.

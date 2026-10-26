@@ -5,6 +5,29 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-10-27
+
+### Added
+- **Cryptographic Token Uniqueness & Worker Label Decoupling (`migrations.nox`, `dialects.nox`):**
+  - Added `owner_token` column to `_feather_migration_lock`.
+  - Implemented `generate_lock_token() -> str` generating cryptographically seeded RFC-4122 v4 UUIDs combining `nox.crypto.sha256`, high-entropy `nox.random.randint`, and `nox.time.now()`.
+  - Separates descriptive caller name (`locked_by`, e.g. `"api-worker-1"`) from secret ownership token (`owner_token`), eliminating release spoofing and lease ID collisions.
+- **Active Lease Fencing & Heartbeat during Long Migrations (`migrations.nox`):**
+  - Added `refresh_lock(owner_token: str = "", additional_seconds: int = 300) -> bool` to extend active leases.
+  - In `migrate_up()` and `migrate_down()`, an atomic lease fencing check is executed before every migration step. If the lease was expired or reclaimed by another process, execution immediately halts with `MigrationError("migration lease lost or reclaimed by another instance: aborting execution to prevent concurrent schema corruption")`.
+- **Database Engine Advisory Locks (`dialects.nox`, `migrations.nox`):**
+  - Added `Dialect.advisory_lock_sql` and `Dialect.advisory_unlock_sql` supporting PostgreSQL (`pg_try_advisory_lock`) and MySQL (`GET_LOCK`), guaranteeing session-level server-managed lock drops upon socket death.
+- **Automatic Metadata Table Self-Upgrade (`migrations.nox`):**
+  - Implemented `_ensure_metadata_columns()` in `init_table()`.
+  - Seamlessly inspects existing tables (`_feather_migration_lock`, `_feather_migrations`) using zero-cost `LIMIT 0` probing, automatically applying non-destructive `ALTER TABLE` upgrades to add `owner_token`, `timeout_at`, and `status` when upgrading from v0.2.0–v0.2.6.
+- **Fatal Error Propagation in Dry-Run Previews (`migrations.nox`):**
+  - Implemented `_is_table_not_found_error(err_msg)` in `preview_up` and `preview_down`. Only genuine missing-table conditions are treated as empty initial schema; connection drops, permission rejections, and syntax errors are cleanly propagated as `MigrationError`.
+- **Administrative Migration Status Recovery API (`migrations.nox`):**
+  - Added `repair_migration_status(version: int, new_status: str = "APPLIED")` to update partially executed non-transactional migration states.
+  - Added `drop_migration_record(version: int)` to remove corrupted records following manual intervention.
+- **Metadata Self-Upgrade Integration Test Suite:**
+  - Added `tests/integration/migration_metadata_upgrade_test.nox` verifying legacy schema upgrading and dry-run error propagation. Total suite expanded to 30 test files (100% pass rate).
+
 ## [0.2.6] - 2026-10-27
 
 ### Added

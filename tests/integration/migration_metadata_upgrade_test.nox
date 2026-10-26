@@ -1,0 +1,65 @@
+# tests/integration/migration_metadata_upgrade_test.nox — Integration tests for automatic metadata schema upgrades and error propagation.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration, val_int, val_str, Value
+import errors
+from errors import MigrationError
+import nox.db
+from nox.db import Row
+
+# -------------------------------------------------------------
+# Test 1: Self-Upgrade of Legacy v0.2.5 Metadata Tables
+# -------------------------------------------------------------
+s: Session = open_sqlite_memory()
+empty_p: list[Value] = []
+
+# Manually create legacy v0.2.5 tables lacking v0.2.7 columns
+s.execute_raw("CREATE TABLE _feather_migration_lock (id INTEGER PRIMARY KEY, is_locked INTEGER NOT NULL, locked_at TEXT NOT NULL, locked_by TEXT NOT NULL);", empty_p)
+s.execute_raw("CREATE TABLE _feather_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, version INTEGER NOT NULL UNIQUE, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL);", empty_p)
+s.execute_raw("INSERT INTO _feather_migration_lock (id, is_locked, locked_at, locked_by) VALUES (1, 0, '', '');", empty_p)
+
+# Verify timeout_at and owner_token do NOT exist initially in legacy schema
+legacy_missing_col: bool = False
+try:
+    s.query_raw("SELECT timeout_at FROM _feather_migration_lock LIMIT 0", empty_p)
+except Exception as _e_chk:
+    legacy_missing_col = True
+nox.test.assert_true(legacy_missing_col, "Initial legacy table lacks timeout_at column")
+
+# Now initialize MigrationManager and call init_table() which runs _ensure_metadata_columns
+m1: Migration = migration(1, "create_items", ["CREATE TABLE upgrade_items (id INTEGER PRIMARY KEY);"], ["DROP TABLE upgrade_items;"])
+mgr: MigrationManager = MigrationManager(s, [m1])
+mgr.init_table()
+
+# Verify columns were seamlessly upgraded
+upgraded_cols_check: list[Row] = s.query_raw("SELECT timeout_at, owner_token FROM _feather_migration_lock LIMIT 1", empty_p)
+nox.test.assert_eq_int(len(upgraded_cols_check), 1, "timeout_at and owner_token now exist and queryable")
+
+status_check: list[Row] = s.query_raw("SELECT status FROM _feather_migrations LIMIT 0", empty_p)
+nox.test.assert_eq_int(len(status_check), 0, "status column now exists in _feather_migrations")
+
+# Verify normal migration lifecycle runs cleanly on the upgraded metadata tables
+tok: str = mgr.acquire_lock("upgrade_tester")
+nox.test.assert_true(len(tok) > 10, "Acquired lock on upgraded metadata table")
+mgr.release_lock(tok)
+
+count: int = mgr.migrate_up()
+nox.test.assert_eq_int(count, 1, "Applied migration on upgraded schema")
+
+# -------------------------------------------------------------
+# Test 2: Fatal Error Propagation in preview_up (Not Swallowed)
+# -------------------------------------------------------------
+# Sever connection to simulate network / connection failure during preview
+s.conn.close()
+
+preview_failed_as_expected: bool = False
+try:
+    mgr.preview_up()
+except MigrationError as me_prev:
+    preview_failed_as_expected = True
+    nox.test.assert_true("failed to inspect schema for preview" in me_prev.message, "preview_up propagates fatal database error with context")
+
+nox.test.assert_true(preview_failed_as_expected, "preview_up does NOT swallow fatal connection errors")
+
+print("migration_metadata_upgrade_test passed")

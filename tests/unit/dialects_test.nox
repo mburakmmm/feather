@@ -76,10 +76,12 @@ nox.test.assert_true(not d_my.supports_transactional_ddl(), "MySQL DDL commits i
 # 8. Migration Lock Table DDL & Row Init
 lock_lite: str = d_sqlite.migration_lock_table_sql()
 nox.test.assert_true("CREATE TABLE IF NOT EXISTS \"_feather_migration_lock\"" in lock_lite, "SQLite lock table DDL")
+nox.test.assert_true("\"owner_token\" TEXT NOT NULL DEFAULT ''" in lock_lite, "SQLite lock table has owner_token")
 nox.test.assert_true("\"timeout_at\" INTEGER NOT NULL DEFAULT 0" in lock_lite, "SQLite lock table has timeout_at")
 
 lock_my: str = d_my.migration_lock_table_sql()
 nox.test.assert_true("CREATE TABLE IF NOT EXISTS `_feather_migration_lock`" in lock_my, "MySQL lock table DDL")
+nox.test.assert_true("`owner_token` VARCHAR(64) NOT NULL DEFAULT ''" in lock_my, "MySQL lock table has owner_token")
 nox.test.assert_true("`timeout_at` INT NOT NULL DEFAULT 0" in lock_my, "MySQL lock table has timeout_at")
 
 init_lite: str = d_sqlite.init_migration_lock_row_sql()
@@ -90,5 +92,12 @@ nox.test.assert_true("ON CONFLICT (\"id\") DO NOTHING" in init_pg, "PostgreSQL l
 
 init_my: str = d_my.init_migration_lock_row_sql()
 nox.test.assert_true("ON DUPLICATE KEY UPDATE `id` = 1" in init_my, "MySQL lock row init uses ON DUPLICATE KEY UPDATE")
+
+# 9. Advisory Lock SQL
+nox.test.assert_true("pg_try_advisory_lock" in d_pg.advisory_lock_sql(""), "PostgreSQL uses pg_try_advisory_lock")
+nox.test.assert_true("pg_advisory_unlock" in d_pg.advisory_unlock_sql(""), "PostgreSQL uses pg_advisory_unlock")
+nox.test.assert_true("GET_LOCK" in d_my.advisory_lock_sql(""), "MySQL uses GET_LOCK")
+nox.test.assert_true("RELEASE_LOCK" in d_my.advisory_unlock_sql(""), "MySQL uses RELEASE_LOCK")
+nox.test.assert_eq_str(d_sqlite.advisory_lock_sql(""), "", "SQLite has no network advisory lock")
 
 print("dialects_test passed")

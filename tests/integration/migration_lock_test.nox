@@ -1,8 +1,8 @@
-# tests/integration/migration_lock_test.nox — Multi-connection concurrency locking, ownership, stale recovery, and dry-run tests.
+# tests/integration/migration_lock_test.nox — Multi-connection concurrency locking, unique tokens, lease fencing, and recovery tests.
 
 import nox.test
 import feather
-from feather import Session, create_session, sqlite_dialect, Migration, MigrationManager, migration, val_int, val_str, Value
+from feather import Session, create_session, sqlite_dialect, Migration, MigrationManager, migration, val_int, val_str, Value, is_valid_uuid
 import errors
 from errors import MigrationError
 import nox.db
@@ -30,7 +30,6 @@ nox.test.assert_eq_int(len(plan_sqls), 2, "preview_up returns 2 SQL statements")
 nox.test.assert_true("CREATE TABLE alpha_lock" in plan_sqls[0], "First preview statement creates alpha_lock")
 nox.test.assert_true("CREATE TABLE beta_lock" in plan_sqls[1], "Second preview statement creates beta_lock")
 
-# Verify dry run did NOT create any tables or lock entries in the database
 empty_p: list[Value] = []
 tables_before: list[Row] = s1.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha_lock'", empty_p)
 nox.test.assert_eq_int(len(tables_before), 0, "preview_up did not modify database tables")
@@ -39,60 +38,73 @@ lock_tables_before: list[Row] = s1.query_raw("SELECT name FROM sqlite_master WHE
 nox.test.assert_eq_int(len(lock_tables_before), 0, "preview_up did not create lock table")
 
 # -------------------------------------------------------------
-# Test 2: True Multi-Connection Concurrency Lock & Ownership Token
+# Test 2: Cryptographic Token Uniqueness & Worker Label Separation
 # -------------------------------------------------------------
-token1: str = mgr1.acquire_lock("worker_1")
-nox.test.assert_eq_str(token1, "worker_1", "Worker 1 acquired lock with requested token")
+token1: str = mgr1.acquire_lock("worker_instance_A")
+nox.test.assert_true(is_valid_uuid(token1), "Acquired lock returns a valid, unique UUID token")
+
+# Check database stores both worker label and unique token
+row_tok: list[Row] = s1.query_raw("SELECT locked_by, owner_token, is_locked FROM _feather_migration_lock WHERE id = 1", empty_p)
+nox.test.assert_eq_str(row_tok[0].get_str(0), "worker_instance_A", "locked_by stores descriptive worker label")
+nox.test.assert_eq_str(row_tok[0].get_str(1), token1, "owner_token stores cryptographic UUID token")
+nox.test.assert_eq_int(row_tok[0].get_int(2), 1, "is_locked is 1")
 
 # Independent connection s2 / mgr2 attempts to acquire lock concurrently
 lock_conflict: bool = False
 try:
-    mgr2.acquire_lock("worker_2")
+    mgr2.acquire_lock("worker_instance_B")
 except MigrationError as me_lock:
     lock_conflict = True
-    nox.test.assert_true("worker_1" in me_lock.message, "Error identifies worker_1 as current lock holder")
+    nox.test.assert_true("worker_instance_A" in me_lock.message, "Error identifies worker_instance_A as current lock holder")
 
 nox.test.assert_true(lock_conflict, "Concurrent lock acquisition rejected across independent connection handles")
 
-# Worker 2 attempts to release Worker 1's lock (ownership mismatch protection)
+# Worker 2 attempts to release Worker 1's lock with a foreign token
 ownership_mismatch: bool = False
 try:
-    mgr2.release_lock("worker_2")
+    mgr2.release_lock("00000000-0000-4000-8000-000000000000")
 except MigrationError as me_rel:
     ownership_mismatch = True
     nox.test.assert_true("ownership mismatch" in me_rel.message, "Ownership mismatch detected on cross-process release attempt")
 
-nox.test.assert_true(ownership_mismatch, "Worker 2 forbidden from releasing Worker 1's lock")
+nox.test.assert_true(ownership_mismatch, "Foreign token forbidden from releasing active lock")
+
+# -------------------------------------------------------------
+# Test 3: Lock Heartbeat / Refresh & Lease Fencing
+# -------------------------------------------------------------
+# Heartbeat extends timeout_at successfully
+refreshed: bool = mgr1.refresh_lock(token1, 600)
+nox.test.assert_true(refreshed, "refresh_lock returns True for active owner token")
 
 # Worker 1 releases cleanly
 mgr1.release_lock(token1)
 
-# Now Worker 2 acquires lock cleanly
-token2: str = mgr2.acquire_lock("worker_2")
-nox.test.assert_eq_str(token2, "worker_2", "Worker 2 acquired lock after Worker 1 released")
+# Now Worker 2 acquires lock cleanly with fresh unique token
+token2: str = mgr2.acquire_lock("worker_instance_B")
+nox.test.assert_true(is_valid_uuid(token2), "Worker 2 acquired lock with fresh UUID")
+nox.test.assert_true(token2 != token1, "Each acquisition generates a new, distinct token")
 mgr2.release_lock(token2)
 
 # -------------------------------------------------------------
-# Test 3: Stale Lock Recovery via timeout_at
+# Test 4: Stale Lock Recovery & Lease Fencing Abort
 # -------------------------------------------------------------
 token_stale: str = mgr1.acquire_lock("worker_abandoned", 10)
 
 # Simulate expired/stale lock by explicitly setting timeout_at to past epoch (1)
 s1.execute_raw("UPDATE _feather_migration_lock SET timeout_at = 1 WHERE id = 1", empty_p)
 
-# Worker 2 should now atomically recover the stale lock
+# Worker 2 atomically recovers the stale lock
 token_recovered: str = mgr2.acquire_lock("worker_recoverer", 300)
-nox.test.assert_eq_str(token_recovered, "worker_recoverer", "Worker 2 recovered stale lock")
+nox.test.assert_true(is_valid_uuid(token_recovered), "Worker 2 recovered stale lock with new UUID")
 
-# Verify database reflects new owner
-rows_check: list[Row] = s1.query_raw("SELECT locked_by, is_locked FROM _feather_migration_lock WHERE id = 1", empty_p)
-nox.test.assert_eq_str(rows_check[0].get_str(0), "worker_recoverer", "Database reflects new lock owner")
-nox.test.assert_eq_int(rows_check[0].get_int(1), 1, "Lock remains actively locked under recoverer")
+# Worker 1 attempting to refresh its old lost lease returns False (fence triggered)
+stolen_refresh: bool = mgr1.refresh_lock(token_stale, 300)
+nox.test.assert_true(not stolen_refresh, "Lost lease refresh rejected by fencing condition")
 
 mgr2.release_lock(token_recovered)
 
 # -------------------------------------------------------------
-# Test 4: Multi-Connection migrate_up and preview_down
+# Test 5: Multi-Connection migrate_up, preview_down, and migrate_down
 # -------------------------------------------------------------
 count: int = mgr1.migrate_up()
 nox.test.assert_eq_int(count, 2, "Applied 2 migrations under automatic concurrency lock")
@@ -116,9 +128,9 @@ tables_after_preview: list[Row] = s1.query_raw("SELECT name FROM sqlite_master W
 nox.test.assert_eq_int(len(tables_after_preview), 1, "preview_down did not drop tables")
 
 # -------------------------------------------------------------
-# Test 5: Failed State Isolation
+# Test 6: Failed State Isolation & Administrative Recovery API
 # -------------------------------------------------------------
-# Insert a failed migration record to test non-transactional DDL failure protection
+# Insert a failed migration record
 s1.execute_raw("INSERT INTO _feather_migrations (version, name, checksum, applied_at, status) VALUES (99, 'failed_step', 'sum', 'now', 'FAILED')", empty_p)
 
 failed_detected: bool = False
@@ -130,8 +142,15 @@ except MigrationError as me_failed:
 
 nox.test.assert_true(failed_detected, "Migration manager aborts when a migration is in FAILED state")
 
-# Cleanup the failed test row
-s1.execute_raw("DELETE FROM _feather_migrations WHERE version = 99", empty_p)
+# Test recovery API: repair_migration_status changes status to APPLIED
+mgr1.repair_migration_status(99, "APPLIED")
+chk_row: list[Row] = s1.query_raw("SELECT status FROM _feather_migrations WHERE version = 99", empty_p)
+nox.test.assert_eq_str(chk_row[0].get_str(0), "APPLIED", "repair_migration_status updated status to APPLIED")
+
+# Test recovery API: drop_migration_record removes the record cleanly
+mgr1.drop_migration_record(99)
+chk_del: list[Row] = s1.query_raw("SELECT version FROM _feather_migrations WHERE version = 99", empty_p)
+nox.test.assert_eq_int(len(chk_del), 0, "drop_migration_record removed record")
 
 # Migrate down cleanly
 down_count: int = mgr2.migrate_down(0)
