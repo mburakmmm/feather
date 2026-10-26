@@ -1,0 +1,81 @@
+# tests/integration/migration_validation_test.nox — Integration tests for migration sorting, duplicate detection, and unknown applied version rejection.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration, val_int, val_str, Value
+import errors
+from errors import MigrationError
+import nox.db
+from nox.db import Row
+
+# -------------------------------------------------------------
+# Test 1: Duplicate migration version detection
+# -------------------------------------------------------------
+s1: Session = open_sqlite_memory()
+m_dup1: Migration = migration(1, "m1", ["CREATE TABLE t1 (id INT);"], ["DROP TABLE t1;"])
+m_dup2: Migration = migration(1, "m1_dup", ["CREATE TABLE t1_dup (id INT);"], ["DROP TABLE t1_dup;"])
+
+dup_caught: bool = False
+try:
+    mgr_dup: MigrationManager = MigrationManager(s1, [m_dup1, m_dup2])
+except MigrationError as me:
+    dup_caught = True
+
+nox.test.assert_true(dup_caught, "MigrationManager rejected duplicate migration version 1")
+s1.close()
+
+# -------------------------------------------------------------
+# Test 2: Migration auto-sorting (out-of-order input)
+# -------------------------------------------------------------
+s2: Session = open_sqlite_memory()
+m1: Migration = migration(1, "create_first", ["CREATE TABLE first_tbl (id INTEGER PRIMARY KEY);"], ["DROP TABLE first_tbl;"])
+m2: Migration = migration(2, "create_second", ["CREATE TABLE second_tbl (id INTEGER PRIMARY KEY);"], ["DROP TABLE second_tbl;"])
+m3: Migration = migration(3, "create_third", ["CREATE TABLE third_tbl (id INTEGER PRIMARY KEY);"], ["DROP TABLE third_tbl;"])
+
+# Pass in scrambled order: [m3, m1, m2]
+mgr_scrambled: MigrationManager = MigrationManager(s2, [m3, m1, m2])
+
+# Verify internal list is sorted strictly ascending
+nox.test.assert_eq_int(mgr_scrambled.migrations[0].version, 1, "First migration has version 1")
+nox.test.assert_eq_int(mgr_scrambled.migrations[1].version, 2, "Second migration has version 2")
+nox.test.assert_eq_int(mgr_scrambled.migrations[2].version, 3, "Third migration has version 3")
+
+# migrate_up applies in 1 -> 2 -> 3 order
+up_count: int = mgr_scrambled.migrate_up()
+nox.test.assert_eq_int(up_count, 3, "Applied all 3 migrations in sorted order")
+
+applied_v: list[int] = mgr_scrambled.get_applied_versions()
+nox.test.assert_eq_int(applied_v[0], 1, "Applied version 0 is 1")
+nox.test.assert_eq_int(applied_v[1], 2, "Applied version 1 is 2")
+nox.test.assert_eq_int(applied_v[2], 3, "Applied version 2 is 3")
+
+# migrate_down(1) rolls back in strictly 3 -> 2 order down to 1
+down_count: int = mgr_scrambled.migrate_down(1)
+nox.test.assert_eq_int(down_count, 2, "Rolled back 2 migrations (3 and 2)")
+
+applied_rem: list[int] = mgr_scrambled.get_applied_versions()
+nox.test.assert_eq_int(len(applied_rem), 1, "Only 1 migration remains applied")
+nox.test.assert_eq_int(applied_rem[0], 1, "Remaining applied migration is version 1")
+s2.close()
+
+# -------------------------------------------------------------
+# Test 3: Reject unknown applied migration version in database
+# -------------------------------------------------------------
+s3: Session = open_sqlite_memory()
+# Apply migrations 1, 2, and 3
+mgr_full: MigrationManager = MigrationManager(s3, [m1, m2, m3])
+mgr_full.migrate_up()
+
+# Now simulate an application where migration 2 was accidentally deleted/omitted from the codebase
+mgr_incomplete: MigrationManager = MigrationManager(s3, [m1, m3])
+
+unknown_caught: bool = False
+try:
+    mgr_incomplete.verify_checksums()
+except MigrationError as me_unk:
+    unknown_caught = True
+
+nox.test.assert_true(unknown_caught, "verify_checksums rejected unknown applied version 2 missing from codebase")
+s3.close()
+
+print("migration_validation_test passed")

@@ -123,9 +123,11 @@ class ConnectionPool:
 
         fc: FeatherConn = self.active_leases.pop(s.lease_id)
 
-        # Roll back ONLY if an active uncommitted transaction exists
-        is_poisoned: bool = False
-        if s.in_transaction:
+        # Check if session is already marked poisoned (e.g. failed commit/rollback or broken socket)
+        is_poisoned: bool = s.is_poisoned
+
+        # If not already poisoned, roll back if an active uncommitted transaction exists
+        if not is_poisoned and s.in_transaction:
             try:
                 fc.execute("ROLLBACK")
                 s.in_transaction = False

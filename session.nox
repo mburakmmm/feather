@@ -68,6 +68,7 @@ class Session:
     lease_id: int
     is_released: bool
     in_transaction: bool
+    is_poisoned: bool
 
     def __init__(self, conn: FeatherConn, dialect: Dialect, owns_conn: bool = True, pool_id: int = 0, lease_id: int = 0) -> None:
         self.conn = conn
@@ -78,6 +79,7 @@ class Session:
         self.lease_id = lease_id
         self.is_released = False
         self.in_transaction = False
+        self.is_poisoned = False
 
     def _ensure_open(self) -> None:
 
@@ -106,9 +108,12 @@ class Session:
             i = i + 1
         affected: int = stmt.execute()
         trimmed: str = nox.strings.upper(nox.strings.trim(sql))
-        if trimmed == "BEGIN" or trimmed == "BEGIN TRANSACTION" or trimmed == "START TRANSACTION":
+        if nox.strings.ends_with(trimmed, ";"):
+            trimmed = nox.strings.trim(trimmed[0:len(trimmed) - 1])
+
+        if nox.strings.starts_with(trimmed, "BEGIN") or nox.strings.starts_with(trimmed, "START TRANSACTION"):
             self.in_transaction = True
-        elif trimmed == "COMMIT" or trimmed == "ROLLBACK":
+        elif trimmed == "COMMIT" or trimmed == "ROLLBACK" or trimmed == "END":
             self.in_transaction = False
         return affected
 

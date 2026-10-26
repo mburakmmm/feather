@@ -91,4 +91,51 @@ s7: Session = cp3.acquire()
 cp3.release_connection(s7)
 cp3.close_all()
 
+# -------------------------------------------------------------
+# Test 6: Semicolons and command variations in raw SQL transactions
+# -------------------------------------------------------------
+cp4: ConnectionPool = create_sqlite_pool(":memory:", 2)
+s8: Session = cp4.acquire()
+s8.create_table(tbl)
+
+s8.execute_raw("BEGIN;", [])
+nox.test.assert_true(s8.in_transaction, "BEGIN; sets in_transaction = True")
+s8.execute_raw("COMMIT;", [])
+nox.test.assert_true(not s8.in_transaction, "COMMIT; sets in_transaction = False")
+
+s8.execute_raw("BEGIN IMMEDIATE;", [])
+nox.test.assert_true(s8.in_transaction, "BEGIN IMMEDIATE; sets in_transaction = True")
+s8.execute_raw("ROLLBACK;", [])
+nox.test.assert_true(not s8.in_transaction, "ROLLBACK; sets in_transaction = False")
+cp4.release_connection(s8)
+cp4.close_all()
+
+# -------------------------------------------------------------
+# Test 7: Poisoning upon failed commit
+# -------------------------------------------------------------
+cp5: ConnectionPool = create_sqlite_pool(":memory:", 2)
+s9: Session = cp5.acquire()
+s9.create_table(tbl)
+tx_fail: Transaction = begin_transaction(s9)
+s9.insert(tbl, {"id": val_int(55), "title": val_str("fail_item")})
+
+# Sever the socket before commit to trigger commit failure
+s9.conn.close()
+
+failed_commit: bool = False
+try:
+    tx_fail.commit()
+except TransactionError as te:
+    failed_commit = True
+
+nox.test.assert_true(failed_commit, "Commit failed as expected on severed socket")
+nox.test.assert_true(s9.is_poisoned, "Session marked is_poisoned after failed commit")
+nox.test.assert_true(s9.in_transaction, "in_transaction remains True on failed commit")
+
+# Releasing session with is_poisoned = True immediately discards connection
+cp5.release_connection(s9)
+nox.test.assert_eq_int(cp5.idle_count(), 0, "Poisoned session discarded, idle remains 0")
+nox.test.assert_eq_int(cp5.total_count(), 0, "Total count reflects discarded broken connection")
+cp5.close_all()
+
 print("transaction_lifecycle_test passed")

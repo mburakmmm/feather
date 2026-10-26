@@ -139,9 +139,10 @@ Defines a versioned migration.
 Computes legacy 8-character DJB2 checksum for backward compatibility with v0.2.0 migrations.
 
 ### `class MigrationManager`
-- `verify_checksums() -> None`: Performs two-phase verification across all applied migrations. Validates legacy checksums in-memory first; only if all migrations pass is an atomic batch update executed to upgrade legacy checksums to SHA-256. If any record fails, the entire upgrade aborts.
-- `migrate_up() -> int`: Executes pending migrations inside transactions after checksum verification.
-- `migrate_down(target_version: int) -> int`: Validates checksums with `verify_checksums()` prior to rollback, then rolls back migrations down to target.
+- `__init__(session: Session, migrations: list[Migration])`: Validates migration uniqueness (raising `MigrationError` on duplicate versions) and automatically sorts migrations in ascending version order via deterministic insertion sort.
+- `verify_checksums() -> None`: Performs two-phase verification across all applied migrations. Validates legacy checksums in-memory first; only if all migrations pass is an atomic batch update executed to upgrade legacy checksums to SHA-256. If any record fails or if an applied migration in the database is missing from the migration list, an explicit `MigrationError` is raised.
+- `migrate_up() -> int`: Executes pending migrations inside transactions in strictly ascending version order (`1 -> 2 -> 3`) after checksum verification.
+- `migrate_down(target_version: int) -> int`: Validates checksums with `verify_checksums()` prior to rollback, then rolls back migrations in strictly descending version order (`3 -> 2 -> 1`) down to target.
 - `get_applied_versions() -> list[int]`: Returns list of applied version numbers.
 - `get_pending_migrations() -> list[Migration]`: Returns list of unapplied migrations.
 - `status() -> list[str]`: Returns status report strings for each migration.

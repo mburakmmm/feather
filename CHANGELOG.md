@@ -5,6 +5,29 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-10-27
+
+### Added
+- **Migration Auto-Sorting and Duplicate Detection (`migrations.nox`):**
+  - `MigrationManager` automatically sorts input migration lists into ascending order by `version` at initialization time via deterministic insertion sort.
+  - Rejects duplicate migration versions with `MigrationError("duplicate migration version detected: ...")`.
+  - Guarantees `migrate_up()` runs in strictly ascending order (`1 -> 2 -> 3`) and `migrate_down()` runs in strictly descending order (`3 -> 2 -> 1`) even if input lists are unsorted or out-of-order.
+- **Rejection of Unknown Applied Migration Versions (`migrations.nox`):**
+  - `verify_checksums()` now actively detects if any applied migration recorded in `_feather_migrations` is missing from the codebase/migration list, raising `MigrationError("unknown applied migration version in database: ... (migration missing from codebase)")`.
+  - Prevents accidental or silent omission of applied migration definitions from the application repository.
+- **Dedicated Migration Order & Validation Test Suite:**
+  - Added `tests/integration/migration_validation_test.nox` verifying duplicate version rejection, scrambled list auto-sorting, and missing applied version detection.
+
+### Changed & Hardened
+- **Poisoned Connection Marking & Zero-Rollback Disposal (`session.nox`, `transaction.nox`, `pool.nox`):**
+  - Added `Session.is_poisoned: bool` tracking compromised or broken connections.
+  - `Transaction.commit()` and `rollback()` set `s.is_poisoned = True` upon encountering any driver or socket failure.
+  - `ConnectionPool.release_connection()` inspects `s.is_poisoned` first; if poisoned, it immediately terminates and discards the socket (`fc.close()`) without attempting a redundant, failing rollback.
+- **Enhanced Raw SQL Transaction Detection (`session.nox`):**
+  - `execute_raw()` normalizes queries by stripping trailing semicolons and whitespace.
+  - Supports `BEGIN;`, `BEGIN IMMEDIATE;`, `BEGIN EXCLUSIVE;`, `START TRANSACTION;`, and prefixed commands (`starts_with("BEGIN")`, `starts_with("START TRANSACTION")`) for robust `in_transaction` tracking.
+  - Accurately clears `in_transaction = False` on `COMMIT;`, `ROLLBACK;`, and `END;`.
+
 ## [0.2.3] - 2026-10-27
 
 ### Added

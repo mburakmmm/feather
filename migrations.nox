@@ -84,13 +84,40 @@ class Migration:
 def migration(version: int, name: str, up_sqls: list[str], down_sqls: list[str]) -> Migration:
     return Migration(version, name, up_sqls, down_sqls)
 
+def _validate_and_sort_migrations(migs: list[Migration]) -> list[Migration]:
+    res: list[Migration] = []
+    i: int = 0
+    while i < len(migs):
+        m: Migration = migs[i]
+        # Check for duplicates
+        j: int = 0
+        while j < len(res):
+            if res[j].version == m.version:
+                raise MigrationError("duplicate migration version detected: " + str(m.version) + " (" + m.name + ")")
+            j = j + 1
+        # Insertion sort by version ascending
+        inserted: bool = False
+        new_res: list[Migration] = []
+        k: int = 0
+        while k < len(res):
+            if not inserted and m.version < res[k].version:
+                new_res.append(m)
+                inserted = True
+            new_res.append(res[k])
+            k = k + 1
+        if not inserted:
+            new_res.append(m)
+        res = new_res
+        i = i + 1
+    return res
+
 class MigrationManager:
     session: Session
     migrations: list[Migration]
 
     def __init__(self: MigrationManager, session: Session, migrations: list[Migration]) -> None:
         self.session = session
-        self.migrations = migrations
+        self.migrations = _validate_and_sort_migrations(migrations)
 
     def init_table(self: MigrationManager) -> None:
 
@@ -115,10 +142,12 @@ class MigrationManager:
         while r_idx < len(rows):
             v: int = rows[r_idx].get_int(0)
             rec_sum: str = rows[r_idx].get_str(1)
+            found_migration: bool = False
             m_idx: int = 0
             while m_idx < len(self.migrations):
                 m: Migration = self.migrations[m_idx]
                 if m.version == v:
+                    found_migration = True
                     curr_sum: str = m.get_checksum()
                     if rec_sum != "" and rec_sum != curr_sum:
                         # Check for backwards compatibility with v0.2.0 (8-character DJB2 checksum)
@@ -133,6 +162,8 @@ class MigrationManager:
                         else:
                             raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded checksum " + rec_sum + ", but code checksum is " + curr_sum)
                 m_idx = m_idx + 1
+            if not found_migration:
+                raise MigrationError("unknown applied migration version in database: " + str(v) + " (migration missing from codebase)")
             r_idx = r_idx + 1
 
         # Phase 2: All checksums verified valid — apply queued legacy upgrades atomically in a single transaction

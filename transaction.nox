@@ -59,6 +59,7 @@ class Transaction:
         except Exception as e:
             self.state = TX_STATE_FAILED
             self.session.in_transaction = True
+            self.session.is_poisoned = True
             raise TransactionError("failed to commit transaction: " + e.message)
 
     def rollback(self: Transaction) -> None:
@@ -74,6 +75,7 @@ class Transaction:
         except Exception as e:
             self.state = TX_STATE_FAILED
             self.session.in_transaction = True
+            self.session.is_poisoned = True
             raise TransactionError("failed to rollback transaction: " + e.message)
 
 def begin_transaction(s: Session) -> Transaction:
