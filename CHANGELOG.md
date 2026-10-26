@@ -5,6 +5,28 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-10-27
+
+### Added
+- **String and UUID Grouped Relation Loading (`relations.nox`):**
+  - Added `RelationLoader.load_has_many_grouped_str[C]` and `load_relation_has_many_grouped_str[C]` returning `dict[str, list[C]]` mapping string and UUID primary keys to child record lists.
+- **Configurable Connection Liveness Ping (`pool.nox`):**
+  - Added `ping_on_acquire: bool = True` to `PoolConfig`, `create_pool`, and `create_sqlite_pool` enabling optional fast-path acquire without round-trip health checks in latency-critical environments while retaining full capability to isolate poisoned connections.
+- **Pre-Rollback Checksum Verification in `migrate_down()` (`migrations.nox`):**
+  - `migrate_down()` now executes `verify_checksums()` prior to executing any rollback SQL, ensuring tampered migration files cannot execute arbitrary unverified down migrations.
+- **Dedicated Transaction Lifecycle and Atomic Migration Verification Test Suites:**
+  - `tests/integration/transaction_lifecycle_test.nox` verifying clean connection releases, uncommitted transaction auto-rollbacks, rollback failure isolation, and configurable health checks.
+  - `tests/integration/migration_rollback_verify_test.nox` verifying atomic multi-migration legacy upgrades and rollback aborts upon checksum divergence.
+
+### Changed & Hardened
+- **Strict Conditional Rollback on Connection Release (`pool.nox`, `session.nox`):**
+  - `release_connection()` only triggers `ROLLBACK` when `s.in_transaction == True`. Clean connections (committed or idle) are immediately returned to the idle pool without executing redundant rollbacks or generating benign driver errors.
+  - Raw SQL inspection in `Session.execute_raw` now tracks `in_transaction = True` on `BEGIN`/`START TRANSACTION` and `False` on `COMMIT`/`ROLLBACK`.
+- **Transaction Abort State Preservation on Failed Operations (`transaction.nox`):**
+  - `Transaction.commit()` and `rollback()` only clear `s.in_transaction` upon successful completion. Failed commits or rollbacks preserve `in_transaction = True` so connection pool release reliably cleans up or discards the compromised connection.
+- **Atomic Legacy Migration Checksum Upgrades (`migrations.nox`):**
+  - `MigrationManager.verify_checksums()` now executes in two distinct phases: in-memory verification across all migrations first, followed by a single transactional batch update for all legacy checksums (`UPDATE _feather_migrations SET checksum = ? WHERE version = ?`). If any migration in the suite fails verification, the transaction aborts and no checksums are partially upgraded.
+
 ## [0.2.2] - 2026-10-27
 
 ### Added

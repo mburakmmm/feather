@@ -112,12 +112,15 @@ Begins transaction on session and returns active `Transaction`.
 
 ## Connection Pooling
 
-### `create_sqlite_pool(db_path: str, max_connections: int = 10) -> ConnectionPool`
+### `create_pool(factory: () -> FeatherConn, dialect: Dialect, max_connections: int = 10, ping_on_acquire: bool = True) -> ConnectionPool`
+Creates a bounded connection pool. `ping_on_acquire` configures whether idle connections are verified with a liveness probe prior to leasing.
+
+### `create_sqlite_pool(db_path: str, max_connections: int = 10, ping_on_acquire: bool = True) -> ConnectionPool`
 Creates a bounded SQLite connection pool.
 
 ### `class ConnectionPool`
-- `acquire() -> Session`: Reuses a healthy idle connection (verifying liveness via `SELECT 1` ping) or creates a fresh one via factory. Wraps connection in a Session with a monotonic `lease_id`.
-- `release_connection(s: Session) -> None`: Validates lease, rolls back uncommitted transactions (safely isolating and discarding poisoned connections if rollback fails), invalidates session (`is_released = True`), and returns healthy connection to idle pool. Raises `PoolError` on double-release or foreign session.
+- `acquire() -> Session`: Reuses a healthy idle connection (verifying liveness via `SELECT 1` ping when `ping_on_acquire = True`) or creates a fresh one via factory. Wraps connection in a Session with a monotonic `lease_id`.
+- `release_connection(s: Session) -> None`: Validates lease, only rolls back if `s.in_transaction == True` (safely isolating and discarding poisoned connections if rollback fails), invalidates session (`is_released = True`), and returns clean healthy connection to idle pool. Clean (committed or non-transactional) sessions skip redundant rollbacks entirely. Raises `PoolError` on double-release or foreign session.
 - `close_all(force: bool = False) -> None`: Closes all idle connections in pool and marks pool closed. If `force=False` (graceful default), in-flight leased sessions can finish and close upon release; if `force=True`, active leased connections are terminated immediately.
 - `close_graceful() -> None`: Initiates graceful pool shutdown.
 - `close_force() -> None`: Initiates immediate force pool shutdown.
@@ -136,8 +139,9 @@ Defines a versioned migration.
 Computes legacy 8-character DJB2 checksum for backward compatibility with v0.2.0 migrations.
 
 ### `class MigrationManager`
-- `migrate_up() -> int`: Executes pending migrations inside transactions.
-- `migrate_down(target_version: int) -> int`: Rolls back migrations down to target.
+- `verify_checksums() -> None`: Performs two-phase verification across all applied migrations. Validates legacy checksums in-memory first; only if all migrations pass is an atomic batch update executed to upgrade legacy checksums to SHA-256. If any record fails, the entire upgrade aborts.
+- `migrate_up() -> int`: Executes pending migrations inside transactions after checksum verification.
+- `migrate_down(target_version: int) -> int`: Validates checksums with `verify_checksums()` prior to rollback, then rolls back migrations down to target.
 - `get_applied_versions() -> list[int]`: Returns list of applied version numbers.
 - `get_pending_migrations() -> list[Migration]`: Returns list of unapplied migrations.
 - `status() -> list[str]`: Returns status report strings for each migration.
@@ -159,8 +163,10 @@ Defines belongs-to foreign key relation.
 - `load_has_many[C](child_model: Model[C], fk_column: str, parent_pk_val: Value) -> list[C]`
 - `load_has_many_batch[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value]) -> list[C]`: Eagerly loads all matching children for multiple parent IDs in a single `WHERE fk IN (?, ?, ...)` query with chunking (`BATCH_CHUNK_SIZE = 500`), eliminating N+1 queries.
 - `load_relation_has_many_batch[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value]) -> list[C]`: Relation wrapper for batched has-many loading.
-- `load_has_many_grouped[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]`: Eagerly loads and groups matching children into a dictionary keyed by parent foreign key (`parent_pk -> list[Child]`).
-- `load_relation_has_many_grouped[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]`: Relation wrapper for grouped loading.
+- `load_has_many_grouped[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]`: Eagerly loads and groups matching children into a dictionary keyed by parent integer foreign key (`parent_pk -> list[Child]`).
+- `load_relation_has_many_grouped[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value], get_fk: (C) -> int) -> dict[int, list[C]]`: Relation wrapper for integer grouped loading.
+- `load_has_many_grouped_str[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value], get_fk_str: (C) -> str) -> dict[str, list[C]]`: Eagerly loads and groups matching children into a dictionary keyed by parent string / UUID foreign key (`parent_pk_str -> list[Child]`).
+- `load_relation_has_many_grouped_str[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value], get_fk_str: (C) -> str) -> dict[str, list[C]]`: Relation wrapper for string / UUID grouped loading.
 - `load_belongs_to[P](parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None`
 - `load_belongs_to_batch[P](parent_model: Model[P], pk_column: str, fk_vals: list[Value]) -> list[P]`: Eagerly loads all matching parent entities for multiple foreign key values in a single `WHERE pk IN (?, ?, ...)` query.
 - `load_relation_belongs_to_batch[P](rel: Relation, parent_model: Model[P], fk_vals: list[Value]) -> list[P]`: Relation wrapper for batched belongs-to loading.

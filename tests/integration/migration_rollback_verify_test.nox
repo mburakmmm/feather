@@ -1,0 +1,92 @@
+# tests/integration/migration_rollback_verify_test.nox — Integration tests for atomic checksum upgrades and pre-rollback checksum verification.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration, compute_legacy_migration_checksum, compute_migration_checksum, val_int, val_str, Value
+import errors
+from errors import MigrationError
+import nox.db
+from nox.db import Row
+
+# -------------------------------------------------------------
+# Test 1: Atomic upgrade of multiple legacy checksums
+# -------------------------------------------------------------
+s1: Session = open_sqlite_memory()
+
+m1: Migration = migration(1, "create_users", ["CREATE TABLE test_users (id INTEGER PRIMARY KEY, name TEXT);"], ["DROP TABLE test_users;"])
+m2: Migration = migration(2, "create_posts", ["CREATE TABLE test_posts (id INTEGER PRIMARY KEY, title TEXT);"], ["DROP TABLE test_posts;"])
+
+mgr1: MigrationManager = MigrationManager(s1, [m1, m2])
+mgr1.init_table()
+
+# Compute legacy checksums for both
+legacy_sum1: str = compute_legacy_migration_checksum(m1)
+legacy_sum2: str = compute_legacy_migration_checksum(m2)
+
+# Insert both directly into _feather_migrations with legacy checksums
+q_ins: str = "INSERT INTO _feather_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)"
+s1.execute_raw(q_ins, [val_int(1), val_str("create_users"), val_str(legacy_sum1), val_str("2026-01-01")])
+s1.execute_raw(q_ins, [val_int(2), val_str("create_posts"), val_str(legacy_sum2), val_str("2026-01-01")])
+
+# verify_checksums() should verify both in-memory and atomically upgrade both in one tx
+mgr1.verify_checksums()
+
+rows: list[Row] = s1.query_raw("SELECT version, checksum FROM _feather_migrations ORDER BY version ASC", [])
+nox.test.assert_eq_int(len(rows), 2, "2 rows exist")
+nox.test.assert_eq_str(rows[0].get_str(1), m1.get_checksum(), "Migration 1 upgraded to SHA-256")
+nox.test.assert_eq_str(rows[1].get_str(1), m2.get_checksum(), "Migration 2 upgraded to SHA-256")
+s1.close()
+
+# -------------------------------------------------------------
+# Test 2: Atomic rollback if any legacy checksum in batch fails verification
+# -------------------------------------------------------------
+s2: Session = open_sqlite_memory()
+mgr2: MigrationManager = MigrationManager(s2, [m1, m2])
+mgr2.init_table()
+
+# Insert m1 with valid legacy checksum, but m2 with INVALID legacy checksum
+s2.execute_raw(q_ins, [val_int(1), val_str("create_users"), val_str(legacy_sum1), val_str("2026-01-01")])
+s2.execute_raw(q_ins, [val_int(2), val_str("create_posts"), val_str("deadbeef"), val_str("2026-01-01")])
+
+failed_atomic: bool = False
+try:
+    mgr2.verify_checksums()
+except MigrationError as me:
+    failed_atomic = True
+
+nox.test.assert_true(failed_atomic, "verify_checksums raised MigrationError on corrupt checksum")
+
+# Verify atomicity: m1 was NOT partially upgraded; it remains in its legacy state!
+rows2: list[Row] = s2.query_raw("SELECT version, checksum FROM _feather_migrations ORDER BY version ASC", [])
+nox.test.assert_eq_str(rows2[0].get_str(1), legacy_sum1, "m1 was NOT partially upgraded because batch verification was atomic")
+s2.close()
+
+# -------------------------------------------------------------
+# Test 3: migrate_down() verifies checksums before running any rollback SQL
+# -------------------------------------------------------------
+s3: Session = open_sqlite_memory()
+m_a: Migration = migration(1, "create_alpha", ["CREATE TABLE alpha (id INTEGER PRIMARY KEY);"], ["DROP TABLE alpha;"])
+mgr3: MigrationManager = MigrationManager(s3, [m_a])
+
+# Apply migration cleanly
+app_count: int = mgr3.migrate_up()
+nox.test.assert_eq_int(app_count, 1, "m_a applied successfully")
+
+# Now simulate tampered code by replacing m_a with a modified version (different down SQL -> different checksum)
+m_a_tampered: Migration = migration(1, "create_alpha", ["CREATE TABLE alpha (id INTEGER PRIMARY KEY);"], ["DROP TABLE alpha_tampered;"])
+mgr3_tampered: MigrationManager = MigrationManager(s3, [m_a_tampered])
+
+down_failed: bool = False
+try:
+    mgr3_tampered.migrate_down(0)
+except MigrationError as me_down:
+    down_failed = True
+
+nox.test.assert_true(down_failed, "migrate_down rejected tampered migration before executing rollback")
+
+# Verify table 'alpha' was NOT dropped
+rows_alpha: list[Row] = s3.query_raw("SELECT name FROM sqlite_master WHERE type='table' AND name='alpha'", [])
+nox.test.assert_eq_int(len(rows_alpha), 1, "Table alpha remains intact because rollback was aborted before execution")
+s3.close()
+
+print("migration_rollback_verify_test passed")

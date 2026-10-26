@@ -104,7 +104,13 @@ class Session:
         while i < len(params):
             bind_value(stmt, i, params[i])
             i = i + 1
-        return stmt.execute()
+        affected: int = stmt.execute()
+        trimmed: str = nox.strings.upper(nox.strings.trim(sql))
+        if trimmed == "BEGIN" or trimmed == "BEGIN TRANSACTION" or trimmed == "START TRANSACTION":
+            self.in_transaction = True
+        elif trimmed == "COMMIT" or trimmed == "ROLLBACK":
+            self.in_transaction = False
+        return affected
 
     def query_raw(self, sql: str, params: list[Value]) -> list[Row]:
 

@@ -1,0 +1,94 @@
+# tests/integration/transaction_lifecycle_test.nox — Comprehensive transaction lifecycle, strict state tracking, and connection release tests.
+
+import nox.test
+import feather
+from feather import ConnectionPool, create_sqlite_pool, Session, Transaction, begin_transaction, Table, col_int, col_str, table, val_int, val_str, TX_STATE_COMMITTED, TX_STATE_ROLLED_BACK
+import errors
+from errors import TransactionError
+
+tbl: Table = table("tx_items", [col_int("id", True), col_str("title")])
+
+# -------------------------------------------------------------
+# Test 1: Commit followed by release executes NO redundant rollback
+# -------------------------------------------------------------
+cp1: ConnectionPool = create_sqlite_pool(":memory:", 2)
+s1: Session = cp1.acquire()
+s1.create_table(tbl)
+
+tx1: Transaction = begin_transaction(s1)
+nox.test.assert_true(s1.in_transaction, "Session is in_transaction during active tx")
+s1.insert(tbl, {"id": val_int(1), "title": val_str("item1")})
+tx1.commit()
+nox.test.assert_true(not s1.in_transaction, "Session in_transaction is False after commit")
+
+# Release: Because in_transaction is False, NO redundant rollback is run
+cp1.release_connection(s1)
+nox.test.assert_eq_int(cp1.idle_count(), 1, "Clean committed connection returned to idle pool")
+
+# -------------------------------------------------------------
+# Test 2: Rollback followed by release returns cleanly to idle
+# -------------------------------------------------------------
+s2: Session = cp1.acquire()
+tx2: Transaction = begin_transaction(s2)
+s2.insert(tbl, {"id": val_int(2), "title": val_str("item2")})
+tx2.rollback()
+nox.test.assert_true(not s2.in_transaction, "Session in_transaction is False after rollback")
+
+cp1.release_connection(s2)
+nox.test.assert_eq_int(cp1.idle_count(), 1, "Rolled-back connection returned to idle pool cleanly")
+
+# -------------------------------------------------------------
+# Test 3: Uncommitted transaction on release triggers automatic rollback
+# -------------------------------------------------------------
+s3: Session = cp1.acquire()
+s3.execute_raw("BEGIN TRANSACTION", [])
+nox.test.assert_true(s3.in_transaction, "execute_raw BEGIN sets in_transaction = True")
+s3.insert(tbl, {"id": val_int(99), "title": val_str("uncommitted")})
+
+# Release without commit or rollback: pool must execute rollback and return connection to idle
+cp1.release_connection(s3)
+nox.test.assert_eq_int(cp1.idle_count(), 1, "Connection rolled back and returned to idle")
+
+# Re-acquire and verify uncommitted row was indeed rolled back
+s3_verify: Session = cp1.acquire()
+c99: int = s3_verify.count(tbl)
+nox.test.assert_eq_int(c99, 1, "Only row 1 was committed; uncommitted row 99 was rolled back")
+cp1.release_connection(s3_verify)
+cp1.close_all()
+
+# -------------------------------------------------------------
+# Test 4: Poisoned connection on rollback failure is discarded
+# -------------------------------------------------------------
+cp2: ConnectionPool = create_sqlite_pool(":memory:", 2)
+s4: Session = cp2.acquire()
+s4.create_table(tbl)
+s4.execute_raw("BEGIN TRANSACTION", [])
+# Sever the physical connection while in-transaction
+s4.conn.close()
+
+# Pool release must detect failure during rollback, mark poisoned, and discard
+cp2.release_connection(s4)
+nox.test.assert_eq_int(cp2.idle_count(), 0, "Poisoned connection was discarded, idle count remains 0")
+nox.test.assert_eq_int(cp2.total_count(), 0, "Total count is 0 after discarding poisoned connection")
+
+# Next acquire must obtain a new healthy connection without capacity leak
+s5: Session = cp2.acquire()
+nox.test.assert_eq_int(cp2.in_use_count(), 1, "New connection acquired successfully")
+cp2.release_connection(s5)
+nox.test.assert_eq_int(cp2.idle_count(), 1, "Healthy connection returned to idle")
+cp2.close_all()
+
+# -------------------------------------------------------------
+# Test 5: Configurable ping_on_acquire
+# -------------------------------------------------------------
+# Pool with ping_on_acquire = False allows fast acquire
+cp3: ConnectionPool = create_sqlite_pool(":memory:", 2, False)
+nox.test.assert_true(not cp3.config.ping_on_acquire, "ping_on_acquire is configured to False")
+s6: Session = cp3.acquire()
+cp3.release_connection(s6)
+nox.test.assert_eq_int(cp3.idle_count(), 1, "Connection returned to idle")
+s7: Session = cp3.acquire()
+cp3.release_connection(s7)
+cp3.close_all()
+
+print("transaction_lifecycle_test passed")

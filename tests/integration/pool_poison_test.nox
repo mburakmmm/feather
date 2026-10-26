@@ -11,10 +11,11 @@ test_tbl: Table = table("health_check_items", [col_int("id", True), col_str("nam
 cp: ConnectionPool = create_sqlite_pool(":memory:", 2)
 nox.test.assert_eq_int(cp.idle_count(), 0, "Initial idle is 0")
 
-# 2. Acquire session 1 and break its underlying connection
+# 2. Acquire session 1, begin transaction, and break its underlying connection
 s1: Session = cp.acquire()
 s1.create_table(test_tbl)
 s1.insert(test_tbl, {"id": val_int(1), "name": val_str("item1")})
+s1.execute_raw("BEGIN TRANSACTION", [])
 
 # Intentionally close the underlying physical connection to simulate network drop / dead connection
 s1.conn.close()

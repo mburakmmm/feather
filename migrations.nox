@@ -108,6 +108,9 @@ class MigrationManager:
         empty_params: list[Value] = []
         rows: list[Row] = self.session.query_raw(sql, empty_params)
 
+        upgrade_versions: list[int] = []
+        upgrade_checksums: list[str] = []
+
         r_idx: int = 0
         while r_idx < len(rows):
             v: int = rows[r_idx].get_int(0)
@@ -122,16 +125,30 @@ class MigrationManager:
                         if len(rec_sum) == 8:
                             legacy_sum: str = compute_legacy_migration_checksum(m)
                             if rec_sum == legacy_sum:
-                                # Upgrade legacy checksum to modern SHA-256 automatically
-                                update_sql: str = "UPDATE " + q_table + " SET " + q_check + " = " + self.session.dialect.placeholder(0) + " WHERE " + q_ver + " = " + self.session.dialect.placeholder(1)
-                                up_params: list[Value] = [val_str(curr_sum), val_int(m.version)]
-                                self.session.execute_raw(update_sql, up_params)
+                                # Queue legacy checksum for atomic upgrade
+                                upgrade_versions.append(m.version)
+                                upgrade_checksums.append(curr_sum)
                             else:
                                 raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded legacy checksum " + rec_sum + ", but code legacy checksum is " + legacy_sum)
                         else:
                             raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded checksum " + rec_sum + ", but code checksum is " + curr_sum)
                 m_idx = m_idx + 1
             r_idx = r_idx + 1
+
+        # Phase 2: All checksums verified valid — apply queued legacy upgrades atomically in a single transaction
+        if len(upgrade_versions) > 0:
+            tx: Transaction = begin_transaction(self.session)
+            try:
+                u_idx: int = 0
+                while u_idx < len(upgrade_versions):
+                    update_sql: str = "UPDATE " + q_table + " SET " + q_check + " = " + self.session.dialect.placeholder(0) + " WHERE " + q_ver + " = " + self.session.dialect.placeholder(1)
+                    up_params: list[Value] = [val_str(upgrade_checksums[u_idx]), val_int(upgrade_versions[u_idx])]
+                    self.session.execute_raw(update_sql, up_params)
+                    u_idx = u_idx + 1
+                tx.commit()
+            except Exception as e:
+                tx.rollback()
+                raise MigrationError("failed to atomically upgrade legacy checksums: " + e.message)
 
     def get_applied_versions(self: MigrationManager) -> list[int]:
 
@@ -223,6 +240,7 @@ class MigrationManager:
     def migrate_down(self: MigrationManager, target_version: int) -> int:
 
         self.init_table()
+        self.verify_checksums()
         applied: list[int] = self.get_applied_versions()
         count: int = 0
 

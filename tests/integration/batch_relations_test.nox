@@ -121,5 +121,53 @@ nox.test.assert_eq_int(len(rel_grouped[1]), 2, "Author 1 has 2 books in relation
 nox.test.assert_eq_int(len(rel_grouped[2]), 1, "Author 2 has 1 book in relation grouped map")
 nox.test.assert_eq_int(len(rel_grouped[3]), 0, "Author 3 has 0 books in relation grouped map")
 
+# 11. Test load_has_many_grouped_str with string / UUID foreign keys
+tbl_org_members: Table = table("org_members", [col_int("id", True), col_str("org_code"), col_str("member_name")])
+s.create_table(tbl_org_members)
+
+class OrgMember:
+    id: int
+    org_code: str
+    member_name: str
+
+    def __init__(self: OrgMember, id: int, org_code: str, member_name: str) -> None:
+        self.id = id
+        self.org_code = org_code
+        self.member_name = member_name
+
+def decode_org_member(r: Row) -> OrgMember:
+    return OrgMember(row_get_int(r, 0), row_get_str(r, 1), row_get_str(r, 2))
+
+def encode_org_member(m: OrgMember) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(m.id)
+    d["org_code"] = val_str(m.org_code)
+    d["member_name"] = val_str(m.member_name)
+    return d
+
+model_member: Model[OrgMember] = Model[OrgMember](tbl_org_members, decode_org_member, encode_org_member)
+
+s.insert(tbl_org_members, {"id": val_int(1), "org_code": val_str("org-alpha"), "member_name": val_str("User A1")})
+s.insert(tbl_org_members, {"id": val_int(2), "org_code": val_str("org-alpha"), "member_name": val_str("User A2")})
+s.insert(tbl_org_members, {"id": val_int(3), "org_code": val_str("org-beta"), "member_name": val_str("User B1")})
+
+def get_member_org(m: OrgMember) -> str:
+    return m.org_code
+
+org_keys: list[Value] = [val_str("org-alpha"), val_str("org-beta"), val_str("org-gamma")]
+grouped_members: dict[str, list[OrgMember]] = loader.load_has_many_grouped_str[OrgMember](model_member, "org_code", org_keys, get_member_org)
+
+nox.test.assert_eq_int(len(grouped_members["org-alpha"]), 2, "org-alpha has 2 members")
+nox.test.assert_eq_int(len(grouped_members["org-beta"]), 1, "org-beta has 1 member")
+nox.test.assert_eq_int(len(grouped_members["org-gamma"]), 0, "org-gamma has 0 members")
+nox.test.assert_eq_str(grouped_members["org-alpha"][0].member_name, "User A1", "Member name matches")
+
+# 12. Test load_relation_has_many_grouped_str helper
+rel_members: Relation = has_many("members", "orgs", "org_members", "org_code", "code")
+rel_grouped_str: dict[str, list[OrgMember]] = loader.load_relation_has_many_grouped_str[OrgMember](rel_members, model_member, org_keys, get_member_org)
+nox.test.assert_eq_int(len(rel_grouped_str["org-alpha"]), 2, "Relation string grouped has 2 members")
+nox.test.assert_eq_int(len(rel_grouped_str["org-beta"]), 1, "Relation string grouped has 1 member")
+nox.test.assert_eq_int(len(rel_grouped_str["org-gamma"]), 0, "Relation string grouped has 0 members")
+
 s.close()
 print("batch_relations_test passed")

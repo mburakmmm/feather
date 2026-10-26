@@ -142,6 +142,35 @@ class RelationLoader:
             raise RelationError("relation '" + rel.name + "' is not a has_many relation")
         return self.load_has_many_grouped[C](child_model, rel.foreign_key, parent_pk_vals, get_fk)
 
+    def load_has_many_grouped_str[C](self: RelationLoader, child_model: Model[C], fk_column: str, parent_pk_vals: list[Value], get_fk_str: (C) -> str) -> dict[str, list[C]]:
+        all_children: list[C] = self.load_has_many_batch[C](child_model, fk_column, parent_pk_vals)
+        res: dict[str, list[C]] = {}
+        i: int = 0
+        while i < len(parent_pk_vals):
+            pv: Value = parent_pk_vals[i]
+            empty_init: list[C] = []
+            res[pv.s] = empty_init
+            i = i + 1
+
+        j: int = 0
+        while j < len(all_children):
+            c: C = all_children[j]
+            parent_id: str = get_fk_str(c)
+            if res.contains(parent_id):
+                sub: list[C] = res[parent_id]
+                sub.append(c)
+                res[parent_id] = sub
+            else:
+                new_list: list[C] = [c]
+                res[parent_id] = new_list
+            j = j + 1
+        return res
+
+    def load_relation_has_many_grouped_str[C](self: RelationLoader, rel: Relation, child_model: Model[C], parent_pk_vals: list[Value], get_fk_str: (C) -> str) -> dict[str, list[C]]:
+        if rel.rel_type != REL_HAS_MANY:
+            raise RelationError("relation '" + rel.name + "' is not a has_many relation")
+        return self.load_has_many_grouped_str[C](child_model, rel.foreign_key, parent_pk_vals, get_fk_str)
+
     def load_belongs_to[P](self: RelationLoader, parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None:
 
         q: SelectQuery = select_all(parent_model.table.name)

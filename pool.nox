@@ -26,13 +26,15 @@ class PoolConfig:
     max_connections: int
     factory: () -> FeatherConn
     dialect: Dialect
+    ping_on_acquire: bool
 
-    def __init__(self: PoolConfig, max_connections: int, factory: () -> FeatherConn, dialect: Dialect) -> None:
+    def __init__(self: PoolConfig, max_connections: int, factory: () -> FeatherConn, dialect: Dialect, ping_on_acquire: bool = True) -> None:
         if max_connections <= 0:
             raise PoolError("max_connections must be greater than zero")
         self.max_connections = max_connections
         self.factory = factory
         self.dialect = dialect
+        self.ping_on_acquire = ping_on_acquire
 
 class ConnectionPool:
     config: PoolConfig
@@ -73,10 +75,11 @@ class ConnectionPool:
 
             # Lightweight health check: verify connection liveness
             is_alive: bool = True
-            try:
-                candidate.query("SELECT 1")
-            except Exception as e_ping:
-                is_alive = False
+            if self.config.ping_on_acquire:
+                try:
+                    candidate.query("SELECT 1")
+                except Exception as e_ping:
+                    is_alive = False
 
             if is_alive:
                 conn = candidate
@@ -120,15 +123,14 @@ class ConnectionPool:
 
         fc: FeatherConn = self.active_leases.pop(s.lease_id)
 
-        # Roll back any active transaction left open by the caller
+        # Roll back ONLY if an active uncommitted transaction exists
         is_poisoned: bool = False
-        s.in_transaction = False
-        try:
-            fc.execute("ROLLBACK")
-        except Exception as e:
-            msg: str = e.message
-            if not (nox.strings.contains(msg, "no transaction is active") or nox.strings.contains(msg, "no transaction in progress")):
-                # Rollback failed due to severed socket or corrupted connection
+        if s.in_transaction:
+            try:
+                fc.execute("ROLLBACK")
+                s.in_transaction = False
+            except Exception as e:
+                # Rollback failed: connection severed or poisoned
                 is_poisoned = True
 
         if is_poisoned or self.is_closed:
@@ -186,12 +188,12 @@ class ConnectionPool:
     def close_force(self: ConnectionPool) -> None:
         self.close_all(True)
 
-def create_pool(factory: () -> FeatherConn, dialect: Dialect, max_connections: int = 10) -> ConnectionPool:
-    cfg: PoolConfig = PoolConfig(max_connections, factory, dialect)
+def create_pool(factory: () -> FeatherConn, dialect: Dialect, max_connections: int = 10, ping_on_acquire: bool = True) -> ConnectionPool:
+    cfg: PoolConfig = PoolConfig(max_connections, factory, dialect, ping_on_acquire)
     return ConnectionPool(cfg)
 
-def create_sqlite_pool(db_path: str, max_connections: int = 10) -> ConnectionPool:
+def create_sqlite_pool(db_path: str, max_connections: int = 10, ping_on_acquire: bool = True) -> ConnectionPool:
     def _sqlite_factory() -> FeatherConn:
         conn: nox.sqlite.Connection = nox.sqlite.open(db_path)
         return wrap_db_connection(conn)
-    return create_pool(_sqlite_factory, sqlite_dialect(), max_connections)
+    return create_pool(_sqlite_factory, sqlite_dialect(), max_connections, ping_on_acquire)
