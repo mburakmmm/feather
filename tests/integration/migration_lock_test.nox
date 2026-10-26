@@ -142,15 +142,45 @@ except MigrationError as me_failed:
 
 nox.test.assert_true(failed_detected, "Migration manager aborts when a migration is in FAILED state")
 
+# Validation: Invalid status is rejected
+invalid_status_rejected: bool = False
+try:
+    mgr1.repair_migration_status(99, "BANANA")
+except MigrationError as me_inv:
+    invalid_status_rejected = True
+    nox.test.assert_true("invalid migration status" in me_inv.message, "Invalid status string BANANA rejected")
+
+nox.test.assert_true(invalid_status_rejected, "repair_migration_status rejects invalid status names")
+
 # Test recovery API: repair_migration_status changes status to APPLIED
 mgr1.repair_migration_status(99, "APPLIED")
 chk_row: list[Row] = s1.query_raw("SELECT status FROM _feather_migrations WHERE version = 99", empty_p)
 nox.test.assert_eq_str(chk_row[0].get_str(0), "APPLIED", "repair_migration_status updated status to APPLIED")
 
-# Test recovery API: drop_migration_record removes the record cleanly
-mgr1.drop_migration_record(99)
+# Modifying already APPLIED migration without force_unlock is forbidden
+applied_protected: bool = False
+try:
+    mgr1.repair_migration_status(99, "FAILED")
+except MigrationError as me_prot:
+    applied_protected = True
+    nox.test.assert_true("force_unlock" in me_prot.message, "Cannot alter APPLIED record without force_unlock")
+
+nox.test.assert_true(applied_protected, "Already APPLIED migration is protected from accidental corruption")
+
+# Dropping already APPLIED migration without force_unlock is forbidden
+drop_protected: bool = False
+try:
+    mgr1.drop_migration_record(99)
+except MigrationError as me_drp:
+    drop_protected = True
+    nox.test.assert_true("force_unlock" in me_drp.message, "Cannot drop APPLIED record without force_unlock")
+
+nox.test.assert_true(drop_protected, "Already APPLIED migration cannot be dropped without force_unlock")
+
+# Admin override with force_unlock=True succeeds
+mgr1.drop_migration_record(99, True)
 chk_del: list[Row] = s1.query_raw("SELECT version FROM _feather_migrations WHERE version = 99", empty_p)
-nox.test.assert_eq_int(len(chk_del), 0, "drop_migration_record removed record")
+nox.test.assert_eq_int(len(chk_del), 0, "drop_migration_record with force_unlock=True removed record")
 
 # Migrate down cleanly
 down_count: int = mgr2.migrate_down(0)

@@ -64,7 +64,7 @@ def get_sample_migrations() -> list[Migration]:
 
 def run_demo() -> None:
     print("==================================================")
-    print("Feather 0.2.7 — Lightweight SQL Data Mapper for Nox")
+    print("Feather 0.2.8 — Lightweight SQL Data Mapper for Nox")
     print("==================================================")
 
     # 1. Connect
@@ -139,7 +139,7 @@ def run_demo() -> None:
 
     s.close()
     print("==================================================")
-    print("All Feather 0.2.7 verification checks passed!")
+    print("All Feather 0.2.8 verification checks passed!")
     print("==================================================")
 
 def handle_cli() -> None:

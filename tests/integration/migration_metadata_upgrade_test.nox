@@ -62,4 +62,48 @@ except MigrationError as me_prev:
 
 nox.test.assert_true(preview_failed_as_expected, "preview_up does NOT swallow fatal connection errors")
 
+# -------------------------------------------------------------
+# Test 3: Concurrent Multi-Connection init_table() on Shared Memory
+# -------------------------------------------------------------
+import nox.sqlite
+from feather import create_session, sqlite_dialect
+
+c_up1: nox.sqlite.Connection = nox.sqlite.open("file:memdb_shared_up?mode=memory&cache=shared")
+c_up2: nox.sqlite.Connection = nox.sqlite.open("file:memdb_shared_up?mode=memory&cache=shared")
+
+s_up1: Session = create_session(c_up1, sqlite_dialect(), True)
+s_up2: Session = create_session(c_up2, sqlite_dialect(), True)
+
+# Create pre-v0.2.6 legacy table without owner_token or timeout_at
+s_up1.execute_raw("CREATE TABLE _feather_migration_lock (id INTEGER PRIMARY KEY, is_locked INTEGER NOT NULL, locked_at TEXT NOT NULL, locked_by TEXT NOT NULL);", empty_p)
+
+mgr_up1: MigrationManager = MigrationManager(s_up1, [])
+mgr_up2: MigrationManager = MigrationManager(s_up2, [])
+
+# Both connections execute init_table concurrently
+mgr_up1.init_table()
+mgr_up2.init_table()
+
+# Verify columns exist cleanly across both independent connection handles
+cols_up1: list[Row] = s_up1.query_raw("SELECT owner_token, timeout_at FROM _feather_migration_lock LIMIT 1", empty_p)
+nox.test.assert_eq_int(len(cols_up1), 1, "Connection 1 observes upgraded metadata columns")
+
+cols_up2: list[Row] = s_up2.query_raw("SELECT owner_token, timeout_at FROM _feather_migration_lock LIMIT 1", empty_p)
+nox.test.assert_eq_int(len(cols_up2), 1, "Connection 2 observes upgraded metadata columns")
+
+# -------------------------------------------------------------
+# Test 4: Expired Lease Cannot Be Refreshed (timeout_at >= now_ts condition)
+# -------------------------------------------------------------
+token_test: str = mgr_up1.acquire_lock("worker_active")
+# Artificially expire the lease by setting timeout_at to epoch 1
+s_up1.execute_raw("UPDATE _feather_migration_lock SET timeout_at = 1 WHERE id = 1", empty_p)
+
+# Attempting to refresh an expired lease must return False
+refresh_failed: bool = mgr_up1.refresh_lock(token_test, 300)
+nox.test.assert_true(not refresh_failed, "Expired lease cannot be refreshed even if is_locked=1")
+
+# Clean up
+s_up1.close()
+s_up2.close()
+
 print("migration_metadata_upgrade_test passed")

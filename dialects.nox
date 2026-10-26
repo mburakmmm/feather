@@ -5,6 +5,8 @@ from errors import DialectError
 import metadata
 from metadata import Column, Table, TYPE_INTEGER, TYPE_TEXT, TYPE_REAL, TYPE_BOOLEAN
 import nox.strings
+import nox.db
+from nox.db import Row
 
 DIALECT_SQLITE: int = 1
 DIALECT_POSTGRES: int = 2
@@ -236,21 +238,58 @@ class Dialect:
             return "INSERT INTO " + q_table + " (" + q_id + ", " + q_locked + ", " + q_time + ", " + q_by + ", " + q_token + ", " + q_timeout + ") VALUES (1, 0, '', '', '', 0) ON DUPLICATE KEY UPDATE " + q_id + " = 1"
         raise DialectError("unknown dialect kind: " + str(self.kind))
 
-    def advisory_lock_sql(self: Dialect, key: str) -> str:
+    def advisory_lock_sql(self: Dialect, key: str = "") -> str:
+
+        lock_key: str = key
+        if lock_key == "":
+            lock_key = "_feather_migration_lock"
 
         if self.kind == DIALECT_POSTGRES:
-            return "SELECT pg_try_advisory_lock(2147483640)"
+            h: int = 5381
+            i: int = 0
+            while i < len(lock_key):
+                h = ((h * 33) + ord(lock_key[i])) % 2147483647
+                i = i + 1
+            return "SELECT pg_try_advisory_lock(117901, " + str(h) + ")"
+
         if self.kind == DIALECT_MYSQL:
-            return "SELECT GET_LOCK('_feather_migration_lock', 0)"
+            return "SELECT GET_LOCK('" + lock_key + "', 0)"
+
         return ""
 
-    def advisory_unlock_sql(self: Dialect, key: str) -> str:
+    def advisory_unlock_sql(self: Dialect, key: str = "") -> str:
+
+        lock_key: str = key
+        if lock_key == "":
+            lock_key = "_feather_migration_lock"
 
         if self.kind == DIALECT_POSTGRES:
-            return "SELECT pg_advisory_unlock(2147483640)"
+            h: int = 5381
+            i: int = 0
+            while i < len(lock_key):
+                h = ((h * 33) + ord(lock_key[i])) % 2147483647
+                i = i + 1
+            return "SELECT pg_advisory_unlock(117901, " + str(h) + ")"
+
         if self.kind == DIALECT_MYSQL:
-            return "SELECT RELEASE_LOCK('_feather_migration_lock')"
+            return "SELECT RELEASE_LOCK('" + lock_key + "')"
+
         return ""
+
+    def parse_advisory_lock_result(self: Dialect, row: Row) -> bool:
+
+        if row.is_null(0):
+            return False
+
+        if self.kind == DIALECT_POSTGRES:
+            s_pg: str = nox.strings.lower(row.get_str(0))
+            return (s_pg == "t" or s_pg == "true" or s_pg == "1")
+
+        if self.kind == DIALECT_MYSQL:
+            s_my: str = row.get_str(0)
+            return (s_my == "1")
+
+        return True
 
     def boolean_sql(self: Dialect, b: bool) -> str:
 

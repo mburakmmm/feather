@@ -84,3 +84,15 @@
   5. Refine dry-run error handling with `_is_table_not_found_error()` to ensure fatal connection drops or permission rejections are properly propagated.
   6. Provide administrative recovery methods (`repair_migration_status`, `drop_migration_record`) for manual operator intervention on non-transactional DDL states.
 - **Consequences:** Eliminates lease hijacking, prevents split-brain execution on slow migrations, ensures seamless backward compatibility across versions, and exposes explicit administrative recovery tools.
+
+## ADR 013: Dialect-Safe Advisory Lock Parsing, Statement-Level Lease Fencing, and Validated Metadata Recovery
+
+- **Context:** Reading PostgreSQL boolean strings from advisory locks as integers produces false lock rejections. An expired lease could previously be extended retroactively if no competitor had yet claimed it. Multi-statement migrations without statement-level fencing risk lock loss during long individual DDL statements. Unchecked recovery API calls risk database corruption.
+- **Decision:**
+  1. Implement `Dialect.parse_advisory_lock_result()` to parse engine-native boolean/integer strings correctly. Use 2-key advisory locks with Feather's dedicated namespace ID `117901` on PostgreSQL.
+  2. Enforce `timeout_at >= now_ts` in `refresh_lock()` SQL: leases can ONLY be extended while actively valid; expired leases cannot be renewed.
+  3. Perform statement-level lease fencing before *every single SQL statement* inside a migration.
+  4. Re-verify column existence via `LIMIT 0` after `ALTER TABLE` in `_ensure_metadata_columns()` to ensure real failures (permissions, disk full) are raised rather than swallowed.
+  5. Bootstrap metadata tables under advisory lock mutual exclusion.
+  6. Require migration lock and status whitelist validation on `repair_migration_status()` and `drop_migration_record()`, requiring explicit `force_unlock=True` to alter `APPLIED` migrations.
+- **Consequences:** True cross-dialect advisory lock safety, zero split-brain execution during heavy DDL, verified self-upgrades, and protected administrative recovery operations.

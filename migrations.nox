@@ -27,8 +27,9 @@ def generate_lock_token() -> str:
     r1: int = nox.random.randint(100000000, 999999999)
     r2: int = nox.random.randint(100000000, 999999999)
     r3: int = nox.random.randint(100000000, 999999999)
+    r4: int = nox.random.randint(100000000, 999999999)
     t: nox.time.DateTime = nox.time.now()
-    seed: str = str(t.year) + str(t.month) + str(t.day) + str(t.hour) + str(t.minute) + str(t.second) + ":" + str(r1) + ":" + str(r2) + ":" + str(r3)
+    seed: str = str(t.year) + str(t.month) + str(t.day) + str(t.hour) + str(t.minute) + str(t.second) + ":" + str(r1) + ":" + str(r2) + ":" + str(r3) + ":" + str(r4)
     raw: str = nox.crypto.sha256(seed)
     return raw[0:8] + "-" + raw[8:12] + "-4" + raw[13:16] + "-a" + raw[17:20] + "-" + raw[20:32]
 
@@ -155,7 +156,7 @@ class MigrationManager:
     def _ensure_metadata_columns(self: MigrationManager) -> None:
         empty_p: list[Value] = []
 
-        # 1. Ensure owner_token in _feather_migration_lock
+        # 1. owner_token in _feather_migration_lock
         needs_owner_token: bool = False
         try:
             self.session.query_raw("SELECT owner_token FROM _feather_migration_lock LIMIT 0", empty_p)
@@ -163,12 +164,23 @@ class MigrationManager:
             needs_owner_token = True
 
         if needs_owner_token:
+            alter_err1: str = ""
             try:
                 self.session.execute_raw("ALTER TABLE _feather_migration_lock ADD COLUMN owner_token TEXT NOT NULL DEFAULT ''", empty_p)
             except Exception as _alt1:
-                pass
+                alter_err1 = _alt1.message
 
-        # 2. Ensure timeout_at in _feather_migration_lock
+            # Re-verify: did ALTER TABLE succeed, or did a concurrent process already add it?
+            still_missing1: bool = False
+            try:
+                self.session.query_raw("SELECT owner_token FROM _feather_migration_lock LIMIT 0", empty_p)
+            except Exception as _chk1:
+                still_missing1 = True
+
+            if still_missing1:
+                raise MigrationError("failed to add required metadata column 'owner_token' to table '_feather_migration_lock': " + alter_err1)
+
+        # 2. timeout_at in _feather_migration_lock
         needs_timeout: bool = False
         try:
             self.session.query_raw("SELECT timeout_at FROM _feather_migration_lock LIMIT 0", empty_p)
@@ -176,15 +188,25 @@ class MigrationManager:
             needs_timeout = True
 
         if needs_timeout:
+            col_t: str = "INTEGER"
+            if self.session.dialect.kind == DIALECT_MYSQL:
+                col_t = "INT"
+            alter_err2: str = ""
             try:
-                col_t: str = "INTEGER"
-                if self.session.dialect.kind == DIALECT_MYSQL:
-                    col_t = "INT"
                 self.session.execute_raw("ALTER TABLE _feather_migration_lock ADD COLUMN timeout_at " + col_t + " NOT NULL DEFAULT 0", empty_p)
             except Exception as _alt2:
-                pass
+                alter_err2 = _alt2.message
 
-        # 3. Ensure status in _feather_migrations
+            still_missing2: bool = False
+            try:
+                self.session.query_raw("SELECT timeout_at FROM _feather_migration_lock LIMIT 0", empty_p)
+            except Exception as _chk2:
+                still_missing2 = True
+
+            if still_missing2:
+                raise MigrationError("failed to add required metadata column 'timeout_at' to table '_feather_migration_lock': " + alter_err2)
+
+        # 3. status in _feather_migrations
         needs_status: bool = False
         try:
             self.session.query_raw("SELECT status FROM _feather_migrations LIMIT 0", empty_p)
@@ -192,24 +214,54 @@ class MigrationManager:
             needs_status = True
 
         if needs_status:
+            alter_err3: str = ""
             try:
                 self.session.execute_raw("ALTER TABLE _feather_migrations ADD COLUMN status TEXT NOT NULL DEFAULT 'APPLIED'", empty_p)
             except Exception as _alt3:
-                pass
+                alter_err3 = _alt3.message
+
+            still_missing3: bool = False
+            try:
+                self.session.query_raw("SELECT status FROM _feather_migrations LIMIT 0", empty_p)
+            except Exception as _chk3:
+                still_missing3 = True
+
+            if still_missing3:
+                raise MigrationError("failed to add required metadata column 'status' to table '_feather_migrations': " + alter_err3)
 
     def init_table(self: MigrationManager) -> None:
 
-        sql: str = self.session.dialect.migration_table_sql()
-        empty_params: list[Value] = []
-        self.session.execute_raw(sql, empty_params)
+        adv_sql: str = self.session.dialect.advisory_lock_sql("")
+        adv_acquired: bool = False
+        empty_adv: list[Value] = []
+        if adv_sql != "":
+            try:
+                adv_rows: list[Row] = self.session.query_raw(adv_sql, empty_adv)
+                if len(adv_rows) > 0 and self.session.dialect.parse_advisory_lock_result(adv_rows[0]):
+                    adv_acquired = True
+            except Exception as _ign_adv:
+                pass
 
-        lock_sql: str = self.session.dialect.migration_lock_table_sql()
-        self.session.execute_raw(lock_sql, empty_params)
+        try:
+            sql: str = self.session.dialect.migration_table_sql()
+            empty_params: list[Value] = []
+            self.session.execute_raw(sql, empty_params)
 
-        self._ensure_metadata_columns()
+            lock_sql: str = self.session.dialect.migration_lock_table_sql()
+            self.session.execute_raw(lock_sql, empty_params)
 
-        init_row_sql: str = self.session.dialect.init_migration_lock_row_sql()
-        self.session.execute_raw(init_row_sql, empty_params)
+            self._ensure_metadata_columns()
+
+            init_row_sql: str = self.session.dialect.init_migration_lock_row_sql()
+            self.session.execute_raw(init_row_sql, empty_params)
+        finally:
+            if adv_acquired:
+                adv_unlock: str = self.session.dialect.advisory_unlock_sql("")
+                if adv_unlock != "":
+                    try:
+                        self.session.query_raw(adv_unlock, empty_adv)
+                    except Exception as _ign_unl:
+                        pass
 
     def verify_checksums(self: MigrationManager) -> None:
 
@@ -334,7 +386,7 @@ class MigrationManager:
         if adv_sql != "":
             empty_adv: list[Value] = []
             adv_rows: list[Row] = self.session.query_raw(adv_sql, empty_adv)
-            if len(adv_rows) > 0 and adv_rows[0].get_int(0) == 0:
+            if len(adv_rows) == 0 or not self.session.dialect.parse_advisory_lock_result(adv_rows[0]):
                 raise MigrationError("migration advisory lock is held by another database session")
 
         now_ts: int = _current_timestamp()
@@ -394,9 +446,11 @@ class MigrationManager:
 
         ph1: str = self.session.dialect.placeholder(0)
         ph2: str = self.session.dialect.placeholder(1)
+        ph3: str = self.session.dialect.placeholder(2)
 
-        ref_sql: str = "UPDATE " + q_table + " SET " + q_timeout + " = " + ph1 + " WHERE " + q_id + " = 1 AND " + q_token + " = " + ph2 + " AND " + q_locked + " = 1"
-        ref_params: list[Value] = [val_int(new_timeout), val_str(token)]
+        # Enforce that lease is still active (timeout_at >= now_ts); an expired lease cannot be refreshed
+        ref_sql: str = "UPDATE " + q_table + " SET " + q_timeout + " = " + ph1 + " WHERE " + q_id + " = 1 AND " + q_token + " = " + ph2 + " AND " + q_locked + " = 1 AND " + q_timeout + " >= " + ph3
+        ref_params: list[Value] = [val_int(new_timeout), val_str(token), val_int(now_ts)]
         affected: int = self.session.execute_raw(ref_sql, ref_params)
         return (affected > 0)
 
@@ -561,27 +615,72 @@ class MigrationManager:
     def plan_down(self: MigrationManager, target_version: int) -> list[str]:
         return self.preview_down(target_version)
 
-    def repair_migration_status(self: MigrationManager, version: int, new_status: str = "APPLIED") -> None:
+    def repair_migration_status(self: MigrationManager, version: int, new_status: str, force_unlock: bool = False) -> None:
 
-        self.init_table()
-        q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
-        q_ver: str = self.session.dialect.quote_identifier("version")
-        q_status: str = self.session.dialect.quote_identifier("status")
-        ph1: str = self.session.dialect.placeholder(0)
-        ph2: str = self.session.dialect.placeholder(1)
-        upd_sql: str = "UPDATE " + q_table + " SET " + q_status + " = " + ph1 + " WHERE " + q_ver + " = " + ph2
-        upd_params: list[Value] = [val_str(new_status), val_int(version)]
-        self.session.execute_raw(upd_sql, upd_params)
+        valid: bool = (new_status == "APPLIED" or new_status == "RUNNING" or new_status == "FAILED")
+        if not valid:
+            raise MigrationError("invalid migration status: '" + new_status + "'. Must be one of: 'APPLIED', 'RUNNING', 'FAILED'")
 
-    def drop_migration_record(self: MigrationManager, version: int) -> None:
+        tok: str = self.acquire_lock("admin_repair")
+        try:
+            q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
+            q_ver: str = self.session.dialect.quote_identifier("version")
+            q_status: str = self.session.dialect.quote_identifier("status")
 
-        self.init_table()
-        q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
-        q_ver: str = self.session.dialect.quote_identifier("version")
-        ph1: str = self.session.dialect.placeholder(0)
-        del_sql: str = "DELETE FROM " + q_table + " WHERE " + q_ver + " = " + ph1
-        del_params: list[Value] = [val_int(version)]
-        self.session.execute_raw(del_sql, del_params)
+            check_sql: str = "SELECT " + q_status + " FROM " + q_table + " WHERE " + q_ver + " = " + self.session.dialect.placeholder(0)
+            p_check: list[Value] = [val_int(version)]
+            rows: list[Row] = self.session.query_raw(check_sql, p_check)
+            if len(rows) == 0:
+                raise MigrationError("cannot repair migration status: migration version " + str(version) + " not found in database")
+
+            curr_st: str = rows[0].get_str(0)
+            if not force_unlock and curr_st == "APPLIED" and new_status != "APPLIED":
+                raise MigrationError("cannot change status of already APPLIED migration " + str(version) + " to '" + new_status + "' without force_unlock=True")
+
+            ph1: str = self.session.dialect.placeholder(0)
+            ph2: str = self.session.dialect.placeholder(1)
+            upd_sql: str = "UPDATE " + q_table + " SET " + q_status + " = " + ph1 + " WHERE " + q_ver + " = " + ph2
+            upd_params: list[Value] = [val_str(new_status), val_int(version)]
+            self.session.execute_raw(upd_sql, upd_params)
+
+            self.release_lock(tok)
+        except Exception as e:
+            try:
+                self.release_lock(tok)
+            except Exception as _ign_rel:
+                pass
+            raise e
+
+    def drop_migration_record(self: MigrationManager, version: int, force_unlock: bool = False) -> None:
+
+        tok: str = self.acquire_lock("admin_drop")
+        try:
+            q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
+            q_ver: str = self.session.dialect.quote_identifier("version")
+            q_status: str = self.session.dialect.quote_identifier("status")
+
+            check_sql: str = "SELECT " + q_status + " FROM " + q_table + " WHERE " + q_ver + " = " + self.session.dialect.placeholder(0)
+            p_check: list[Value] = [val_int(version)]
+            rows: list[Row] = self.session.query_raw(check_sql, p_check)
+            if len(rows) == 0:
+                raise MigrationError("cannot drop migration record: migration version " + str(version) + " not found in database")
+
+            curr_st: str = rows[0].get_str(0)
+            if not force_unlock and curr_st == "APPLIED":
+                raise MigrationError("cannot drop record of successfully APPLIED migration " + str(version) + " without force_unlock=True")
+
+            ph1: str = self.session.dialect.placeholder(0)
+            del_sql: str = "DELETE FROM " + q_table + " WHERE " + q_ver + " = " + ph1
+            del_params: list[Value] = [val_int(version)]
+            self.session.execute_raw(del_sql, del_params)
+
+            self.release_lock(tok)
+        except Exception as e:
+            try:
+                self.release_lock(tok)
+            except Exception as _ign_rel:
+                pass
+            raise e
 
     def migrate_up(self: MigrationManager) -> int:
 
@@ -595,16 +694,16 @@ class MigrationManager:
 
             i: int = 0
             while i < len(pending):
-                # Lease fencing / heartbeat check before each migration step
-                if not self.refresh_lock(token, 300):
-                    raise MigrationError("migration lease lost or reclaimed by another instance: aborting execution to prevent concurrent schema corruption")
-
                 m: Migration = pending[i]
                 if has_tx_ddl:
                     tx: Transaction = begin_transaction(self.session)
                     try:
                         s_idx: int = 0
                         while s_idx < len(m.up_sqls):
+                            # Statement-level lease fencing: actively verifies and extends lease before each statement
+                            if not self.refresh_lock(token, 300):
+                                raise MigrationError("migration lease lost or expired before executing statement " + str(s_idx + 1) + " of migration " + str(m.version) + " (" + m.name + "): aborting to prevent concurrent schema corruption")
+
                             empty_p: list[Value] = []
                             self.session.execute_raw(m.up_sqls[s_idx], empty_p)
                             s_idx = s_idx + 1
@@ -653,6 +752,10 @@ class MigrationManager:
                     try:
                         s_idx: int = 0
                         while s_idx < len(m.up_sqls):
+                            # Statement-level lease fencing for non-transactional DDL
+                            if not self.refresh_lock(token, 300):
+                                raise MigrationError("migration lease lost or expired before executing statement " + str(s_idx + 1) + " of migration " + str(m.version) + " (" + m.name + "): aborting to prevent concurrent schema corruption")
+
                             empty_p: list[Value] = []
                             self.session.execute_raw(m.up_sqls[s_idx], empty_p)
                             s_idx = s_idx + 1
@@ -701,15 +804,15 @@ class MigrationManager:
                         j = j + 1
 
                     if is_app:
-                        # Lease fencing / heartbeat check before each rollback step
-                        if not self.refresh_lock(token, 300):
-                            raise MigrationError("migration lease lost or reclaimed by another instance: aborting rollback to prevent concurrent schema corruption")
-
                         if has_tx_ddl:
                             tx: Transaction = begin_transaction(self.session)
                             try:
                                 s_idx: int = 0
                                 while s_idx < len(m.down_sqls):
+                                    # Statement-level lease fencing during rollback
+                                    if not self.refresh_lock(token, 300):
+                                        raise MigrationError("migration lease lost or expired before executing rollback statement " + str(s_idx + 1) + " of migration " + str(m.version) + ": aborting rollback to prevent concurrent schema corruption")
+
                                     empty_p: list[Value] = []
                                     self.session.execute_raw(m.down_sqls[s_idx], empty_p)
                                     s_idx = s_idx + 1
@@ -730,6 +833,9 @@ class MigrationManager:
                             try:
                                 s_idx: int = 0
                                 while s_idx < len(m.down_sqls):
+                                    if not self.refresh_lock(token, 300):
+                                        raise MigrationError("migration lease lost or expired before executing rollback statement " + str(s_idx + 1) + " of migration " + str(m.version) + ": aborting rollback to prevent concurrent schema corruption")
+
                                     empty_p: list[Value] = []
                                     self.session.execute_raw(m.down_sqls[s_idx], empty_p)
                                     s_idx = s_idx + 1

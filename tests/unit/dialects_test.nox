@@ -95,8 +95,10 @@ nox.test.assert_true("ON DUPLICATE KEY UPDATE `id` = 1" in init_my, "MySQL lock 
 
 # 9. Advisory Lock SQL
 nox.test.assert_true("pg_try_advisory_lock" in d_pg.advisory_lock_sql(""), "PostgreSQL uses pg_try_advisory_lock")
+nox.test.assert_true("117901" in d_pg.advisory_lock_sql("app_alpha"), "PostgreSQL advisory lock includes Feather namespace ID 117901")
 nox.test.assert_true("pg_advisory_unlock" in d_pg.advisory_unlock_sql(""), "PostgreSQL uses pg_advisory_unlock")
 nox.test.assert_true("GET_LOCK" in d_my.advisory_lock_sql(""), "MySQL uses GET_LOCK")
+nox.test.assert_true("app_alpha" in d_my.advisory_lock_sql("app_alpha"), "MySQL advisory lock includes custom key app_alpha")
 nox.test.assert_true("RELEASE_LOCK" in d_my.advisory_unlock_sql(""), "MySQL uses RELEASE_LOCK")
 nox.test.assert_eq_str(d_sqlite.advisory_lock_sql(""), "", "SQLite has no network advisory lock")
 

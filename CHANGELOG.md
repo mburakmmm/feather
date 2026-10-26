@@ -5,6 +5,25 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-10-27
+
+### Added
+- **Dialect-Safe Advisory Lock Result Parsing (`dialects.nox`, `migrations.nox`):**
+  - Added `Dialect.parse_advisory_lock_result(row: Row) -> bool` handling PostgreSQL boolean strings (`"t"`, `"true"`, `"1"`) without assuming integer conversion on `libpq` rows, and MySQL integer results with NULL safety.
+  - Multi-app namespace isolation: PostgreSQL uses 2-key integer locking `pg_try_advisory_lock(117901, hash)` with Feather namespace constant `117901`, preventing advisory lock collisions between different applications sharing the same database.
+- **Strict Lease Renewal Continuity in `refresh_lock()` (`migrations.nox`):**
+  - Added `AND timeout_at >= ?` condition to `refresh_lock` SQL update. Enforces that a lease can ONLY be renewed while still active; an already expired lease cannot be retroactively extended.
+- **Statement-Level Lease Fencing (`migrations.nox`):**
+  - `migrate_up` and `migrate_down` now actively verify and extend the lease before *every single DDL statement* within a migration. If any heavy statement takes longer than the lease duration, the subsequent statement is aborted before execution with `MigrationError`.
+- **Verified Metadata Self-Upgrade & Mutual Exclusion (`migrations.nox`):**
+  - `_ensure_metadata_columns()` re-verifies column existence via `LIMIT 0` if `ALTER TABLE` fails. Tolerates concurrent execution while raising `MigrationError` on genuine failures (permissions, disk full, syntax).
+  - `init_table()` runs under an advisory lock on PostgreSQL and MySQL, preventing race conditions during table bootstrap.
+- **Restricted & Protected Migration Recovery API (`migrations.nox`):**
+  - `repair_migration_status(version, new_status, force_unlock = False)` strictly validates `new_status` against `["APPLIED", "RUNNING", "FAILED"]`, rejecting invalid inputs (e.g. `"BANANA"`).
+  - Both `repair_migration_status` and `drop_migration_record` require acquiring the migration lock and forbid modifying or dropping an already `APPLIED` migration without explicit `force_unlock=True`.
+- **Expanded Integration Tests:**
+  - Added multi-connection concurrent `init_table()` on shared memory, expired lease renewal rejection, recovery API input validation, and `force_unlock` protections.
+
 ## [0.2.7] - 2026-10-27
 
 ### Added
