@@ -1,0 +1,65 @@
+# tests/integration/insert_many_test.nox — Integration tests for batch insert_many.
+
+import nox.test
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, val_bool, col_int, col_str, col_bool, table, open_sqlite_memory, row_get_int, row_get_str
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class LogEntry:
+    id: int
+    service: str
+    message: str
+
+    def __init__(self: LogEntry, id: int, service: str, message: str) -> None:
+        self.id = id
+        self.service = service
+        self.message = message
+
+def decode_log(r: Row) -> LogEntry:
+    return LogEntry(row_get_int(r, 0), row_get_str(r, 1), row_get_str(r, 2))
+
+def encode_log(l: LogEntry) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(l.id)
+    d["service"] = val_str(l.service)
+    d["message"] = val_str(l.message)
+    return d
+
+s: Session = open_sqlite_memory()
+
+tbl: Table = table("logs", [
+    col_int("id", True, False, True),
+    col_str("service"),
+    col_str("message")
+])
+m: Model[LogEntry] = Model[LogEntry](tbl, decode_log, encode_log)
+s.create_table(tbl)
+
+# 1. Test empty batch returns 0
+empty_rows: list[dict[str, Value]] = []
+zero_aff: int = s.insert_many(tbl, empty_rows)
+nox.test.assert_eq_int(zero_aff, 0, "insert_many on empty list returns 0")
+
+# 2. Batch insert multiple rows in a single statement
+r1: dict[str, Value] = {"service": val_str("auth"), "message": val_str("user login")}
+r2: dict[str, Value] = {"service": val_str("payment"), "message": val_str("charge successful")}
+r3: dict[str, Value] = {"service": val_str("mailer"), "message": val_str("email sent")}
+r4: dict[str, Value] = {"service": val_str("auth"), "message": val_str("token refreshed")}
+
+batch: list[dict[str, Value]] = [r1, r2, r3, r4]
+aff: int = s.insert_many(tbl, batch)
+nox.test.assert_eq_int(aff, 4, "4 rows affected by insert_many")
+nox.test.assert_eq_int(s.count(tbl), 4, "Total rows in table is 4")
+
+# 3. Verify all records retrieved
+all_logs: list[LogEntry] = s.find_all[LogEntry](m)
+nox.test.assert_eq_int(len(all_logs), 4, "Retrieved 4 logs")
+nox.test.assert_eq_str(all_logs[0].service, "auth", "First log service matches")
+nox.test.assert_eq_str(all_logs[1].service, "payment", "Second log service matches")
+nox.test.assert_eq_str(all_logs[3].service, "auth", "Fourth log service matches")
+
+s.close()
+print("insert_many_test passed")

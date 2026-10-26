@@ -1,7 +1,18 @@
 # main.nox — Feather demonstration and verification CLI.
 
+import nox.os
 import feather
-from feather import Session, Table, Column, Value, val_int, val_str, val_float, val_bool, val_null, col_int, col_str, col_bool, table, select_all, SelectQuery, eq, gt, open_sqlite_memory, row_get_int, row_get_str, row_get_bool, Transaction, begin_transaction, Migration, MigrationManager, migration
+from feather import Session, Table, Column, Value, val_int, val_str, val_float, val_bool, val_null
+from feather import val_decimal, val_datetime, val_uuid
+from feather import col_int, col_str, col_float, col_bool, table, select, select_all, SelectQuery, CompiledQuery
+from feather import count_all, sum_col, avg_col, eq, gt, gte
+from feather import open_sqlite_memory, connect_sqlite
+from feather import row_get_int, row_get_str, row_get_float, row_get_bool
+from feather import row_get_decimal, row_get_datetime, row_get_uuid
+from feather import Transaction, begin_transaction
+from feather import Migration, MigrationManager, migration
+from feather import Relation, RelationLoader, many_to_many
+from feather import decimal, parse_iso_datetime, uuid_parse
 import mapper
 from mapper import Model
 import nox.db
@@ -33,9 +44,27 @@ def encode_user(u: User) -> dict[str, Value]:
     d["is_active"] = val_bool(u.is_active)
     return d
 
+def get_sample_migrations() -> list[Migration]:
+    m1: Migration = migration(1, "create_users_table", [
+        "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, email TEXT, created_at TEXT NOT NULL)"
+    ], [
+        "DROP TABLE IF EXISTS users"
+    ])
+    m2: Migration = migration(2, "create_posts_table", [
+        "CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL, content TEXT)"
+    ], [
+        "DROP TABLE IF EXISTS posts"
+    ])
+    m3: Migration = migration(3, "add_status_to_posts", [
+        "ALTER TABLE posts ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'"
+    ], [
+        "ALTER TABLE posts DROP COLUMN status"
+    ])
+    return [m1, m2, m3]
+
 def run_demo() -> None:
     print("==================================================")
-    print("Feather 0.1.0 — Lightweight SQL Data Mapper for Nox")
+    print("Feather 0.2.0 — Lightweight SQL Data Mapper for Nox")
     print("==================================================")
 
     # 1. Connect
@@ -50,29 +79,14 @@ def run_demo() -> None:
     s.create_table(user_table)
     print("[2] Created table 'users' successfully.")
 
-    # 3. Insert Records
-    u1_vals: dict[str, Value] = {}
-    u1_vals["name"] = val_str("Alice Smith")
-    u1_vals["email"] = val_str("alice@example.com")
-    u1_vals["age"] = val_int(30)
-    u1_vals["is_active"] = val_bool(True)
-    id1: int = s.insert(user_table, u1_vals)
-
-    u2_vals: dict[str, Value] = {}
-    u2_vals["name"] = val_str("Bob Jones")
-    u2_vals["email"] = val_str("bob@example.com")
-    u2_vals["age"] = val_int(22)
-    u2_vals["is_active"] = val_bool(False)
-    id2: int = s.insert(user_table, u2_vals)
-
-    u3_vals: dict[str, Value] = {}
-    u3_vals["name"] = val_str("Charlie Brown")
-    u3_vals["email"] = val_str("charlie@example.com")
-    u3_vals["age"] = val_int(35)
-    u3_vals["is_active"] = val_bool(True)
-    id3: int = s.insert(user_table, u3_vals)
-
-    print("[3] Inserted 3 users. Generated IDs: " + str(id1) + ", " + str(id2) + ", " + str(id3))
+    # 3. Batch Insert (insert_many)
+    batch_rows: list[dict[str, Value]] = [
+        {"name": val_str("Alice Smith"), "email": val_str("alice@example.com"), "age": val_int(30), "is_active": val_bool(True)},
+        {"name": val_str("Bob Jones"), "email": val_str("bob@example.com"), "age": val_int(22), "is_active": val_bool(False)},
+        {"name": val_str("Charlie Brown"), "email": val_str("charlie@example.com"), "age": val_int(35), "is_active": val_bool(True)}
+    ]
+    inserted_count: int = s.insert_many(user_table, batch_rows)
+    print("[3] Batch inserted " + str(inserted_count) + " users via insert_many.")
 
     # 4. Query All
     all_users: list[User] = s.find_all[User](user_model)
@@ -88,15 +102,25 @@ def run_demo() -> None:
         print("    -> ID: " + str(u.id) + " | " + u.name + " (" + str(u.age) + ") | " + u.email)
         i = i + 1
 
-    # 6. Update
-    up_vals: dict[str, Value] = {}
-    up_vals["age"] = val_int(31)
-    s.update_by_id(user_table, val_int(id1), up_vals)
-    updated_user: User | None = s.find_by_id[User](user_model, val_int(id1))
-    if updated_user is not None:
-        print("[6] Updated Alice's age to: " + str(updated_user.age))
+    # 6. Aggregates and Group By
+    q_agg: SelectQuery = select("users", ["is_active", count_all(), avg_col("age")])
+    q_agg.group_by(["is_active"])
+    compiled_agg: CompiledQuery = q_agg.compile(s.dialect)
+    agg_rows: list[Row] = s.query_raw(compiled_agg.sql, compiled_agg.params)
+    print("[6] Aggregate query executed (" + str(len(agg_rows)) + " groups).")
 
-    # 7. Transactions
+    # 7. Upsert operation
+    s.upsert(user_table, {
+        "name": val_str("Alice Smith"),
+        "email": val_str("alice_new@example.com"),
+        "age": val_int(31),
+        "is_active": val_bool(True)
+    }, ["email"], {
+        "age": val_int(31)
+    })
+    print("[7] Upsert on email conflict executed successfully.")
+
+    # 8. Transactions
     tx: Transaction = begin_transaction(s)
     tx_vals: dict[str, Value] = {}
     tx_vals["name"] = val_str("Temp User")
@@ -106,17 +130,85 @@ def run_demo() -> None:
     s.insert(user_table, tx_vals)
     tx.rollback()
     after_rollback_count: int = s.count(user_table)
-    print("[7] Transaction rollback test passed. Active user count remains: " + str(after_rollback_count))
+    print("[8] Transaction rollback test passed. Active user count remains: " + str(after_rollback_count))
 
-    # 8. Migrations
-    mig1: Migration = migration(1, "create_posts", ["CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)"], ["DROP TABLE posts"])
-    mgr: MigrationManager = MigrationManager(s, [mig1])
+    # 9. Migrations with Checksum Verification
+    mgr: MigrationManager = MigrationManager(s, get_sample_migrations())
     applied: int = mgr.migrate_up()
-    print("[8] Applied migrations: " + str(applied))
+    print("[9] Applied schema migrations with checksum verification: " + str(applied))
 
     s.close()
     print("==================================================")
-    print("All Feather checks completed successfully!")
+    print("All Feather 0.2.0 verification checks passed!")
     print("==================================================")
 
-run_demo()
+def handle_cli() -> None:
+    argc: int = nox.os.arg_count()
+    if argc <= 1:
+        run_demo()
+        return
+
+    cmd: str = nox.os.arg(1)
+    if cmd == "help" or cmd == "--help" or cmd == "-h":
+        print("Feather ORM CLI")
+        print("Usage:")
+        print("  feather demo                    Run full ORM feature verification")
+        print("  feather migrate status [db]     Show status of all schema migrations")
+        print("  feather migrate up [db]         Apply all pending migrations")
+        print("  feather migrate down [ver] [db] Roll back migrations down to target version")
+        return
+
+    if cmd == "demo":
+        run_demo()
+        return
+
+    if cmd == "migrate":
+        if argc <= 2:
+            print("Error: migrate requires a subcommand (status, up, down)")
+            return
+        subcmd: str = nox.os.arg(2)
+        db_path: str = "feather.db"
+        if subcmd == "status":
+            if argc >= 4:
+                db_path = nox.os.arg(3)
+            s: Session = connect_sqlite(db_path)
+            mgr: MigrationManager = MigrationManager(s, get_sample_migrations())
+            lines: list[str] = mgr.status()
+            print("Migration status for " + db_path + ":")
+            i: int = 0
+            while i < len(lines):
+                print("  " + lines[i])
+                i = i + 1
+            s.close()
+            return
+
+        if subcmd == "up":
+            if argc >= 4:
+                db_path = nox.os.arg(3)
+            s: Session = connect_sqlite(db_path)
+            mgr: MigrationManager = MigrationManager(s, get_sample_migrations())
+            count: int = mgr.migrate_up()
+            print("Successfully applied " + str(count) + " migration(s) on " + db_path)
+            s.close()
+            return
+
+        if subcmd == "down":
+            target_v: int = 0
+            if argc >= 4:
+                target_str: str = nox.os.arg(3)
+                target_v = int(target_str)
+            if argc >= 5:
+                db_path = nox.os.arg(4)
+            s: Session = connect_sqlite(db_path)
+            mgr: MigrationManager = MigrationManager(s, get_sample_migrations())
+            count: int = mgr.migrate_down(target_v)
+            print("Successfully rolled back " + str(count) + " migration(s) down to version " + str(target_v) + " on " + db_path)
+            s.close()
+            return
+
+        print("Unknown migrate subcommand: " + subcmd)
+        return
+
+    print("Unknown command: " + cmd + ". Run 'feather help' for usage.")
+
+handle_cli()

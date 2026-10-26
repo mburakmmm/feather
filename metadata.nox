@@ -55,8 +55,8 @@ class Column:
 def col_int(name: str, is_pk: bool = False, is_null: bool = False, is_auto: bool = False) -> Column:
     return Column(name, TYPE_INTEGER, is_pk, is_null, is_auto, False, None)
 
-def col_str(name: str, is_null: bool = False, is_unique: bool = False) -> Column:
-    return Column(name, TYPE_TEXT, False, is_null, False, is_unique, None)
+def col_str(name: str, is_null: bool = False, is_unique: bool = False, is_pk: bool = False) -> Column:
+    return Column(name, TYPE_TEXT, is_pk, is_null, False, is_unique, None)
 
 def col_float(name: str, is_null: bool = False) -> Column:
     return Column(name, TYPE_REAL, False, is_null, False, False, None)
@@ -68,14 +68,24 @@ class Table:
     name: str
     columns: list[Column]
     primary_key: str
+    primary_keys: list[str]
 
-    def __init__(self: Table, name: str, columns: list[Column], primary_key: str) -> None:
+    def __init__(self: Table, name: str, columns: list[Column], primary_keys: list[str]) -> None:
         self.name = name
         self.columns = columns
-        self.primary_key = primary_key
+        self.primary_keys = primary_keys
+        if len(primary_keys) == 1:
+            self.primary_key = primary_keys[0]
+        else:
+            self.primary_key = ""
+
+    def is_composite_pk(self: Table) -> bool:
+        return len(self.primary_keys) > 1
+
+    def has_pk(self: Table) -> bool:
+        return len(self.primary_keys) > 0
 
     def get_column(self: Table, col_name: str) -> Column | None:
-
         i: int = 0
         while i < len(self.columns):
             if self.columns[i].name == col_name:
@@ -84,12 +94,10 @@ class Table:
         return None
 
     def has_column(self: Table, col_name: str) -> bool:
-
         col: Column | None = self.get_column(col_name)
         return col is not None
 
     def column_names(self: Table) -> list[str]:
-
         names: list[str] = []
         i: int = 0
         while i < len(self.columns):
@@ -102,7 +110,7 @@ def table(name: str, columns: list[Column]) -> Table:
     if len(columns) == 0:
         raise QueryBuildError("table \"" + name + "\" must declare at least one column")
 
-    pk_name: str = ""
+    pks: list[str] = []
     seen: list[str] = []
     i: int = 0
     while i < len(columns):
@@ -114,9 +122,7 @@ def table(name: str, columns: list[Column]) -> Table:
             j = j + 1
         seen.append(col.name)
         if col.is_primary_key:
-            if pk_name != "":
-                raise QueryBuildError("multiple primary keys declared on table \"" + name + "\": " + pk_name + " and " + col.name)
-            pk_name = col.name
+            pks.append(col.name)
         i = i + 1
 
-    return Table(name, columns, pk_name)
+    return Table(name, columns, pks)

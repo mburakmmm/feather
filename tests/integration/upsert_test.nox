@@ -1,0 +1,108 @@
+# tests/integration/upsert_test.nox — Unit and integration tests for upsert operations.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Table, Column, col_int, col_str, table, val_int, val_str, Value, sqlite_dialect, postgres_dialect, mysql_dialect, Dialect
+import errors
+from errors import QueryBuildError, IdentifierError
+import nox.db
+from nox.db import Row
+
+# 1. Dialect SQL compilation tests
+user_tbl: Table = table("users", [
+    col_int("id", True),
+    col_str("username", False, True),
+    col_str("email"),
+    col_int("login_count")
+])
+
+d_sqlite: Dialect = sqlite_dialect()
+sql_sq: str = d_sqlite.upsert_sql(user_tbl, ["id", "username", "email"], ["username"], ["email"])
+nox.test.assert_eq_str(sql_sq, "INSERT INTO \"users\" (\"id\", \"username\", \"email\") VALUES (?, ?, ?) ON CONFLICT (\"username\") DO UPDATE SET \"email\" = ?", "SQLite upsert query matches")
+
+d_pg: Dialect = postgres_dialect()
+sql_pg: str = d_pg.upsert_sql(user_tbl, ["id", "username", "email"], ["username"], ["email"])
+nox.test.assert_eq_str(sql_pg, "INSERT INTO \"users\" (\"id\", \"username\", \"email\") VALUES ($1, $2, $3) ON CONFLICT (\"username\") DO UPDATE SET \"email\" = $4", "PostgreSQL upsert query matches with $1..$4")
+
+d_my: Dialect = mysql_dialect()
+sql_my: str = d_my.upsert_sql(user_tbl, ["id", "username", "email"], ["username"], ["email"])
+nox.test.assert_eq_str(sql_my, "INSERT INTO `users` (`id`, `username`, `email`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `email` = ?", "MySQL upsert query matches")
+
+# DO NOTHING variant
+sql_sq_nothing: str = d_sqlite.upsert_sql(user_tbl, ["id", "username"], ["username"], [])
+nox.test.assert_eq_str(sql_sq_nothing, "INSERT INTO \"users\" (\"id\", \"username\") VALUES (?, ?) ON CONFLICT (\"username\") DO NOTHING", "SQLite DO NOTHING matches")
+
+# 2. Database execution in SQLite memory
+s: Session = open_sqlite_memory()
+s.create_table(user_tbl)
+
+# First insert via upsert
+s.upsert(user_tbl, {
+    "id": val_int(1),
+    "username": val_str("alice"),
+    "email": val_str("alice@first.com"),
+    "login_count": val_int(1)
+}, ["username"], {
+    "email": val_str("alice@first.com"),
+    "login_count": val_int(1)
+})
+
+nox.test.assert_eq_int(s.count(user_tbl), 1, "1 record inserted")
+
+rows1: list[Row] = s.query_raw("SELECT email, login_count FROM users WHERE username = 'alice'", [])
+nox.test.assert_eq_str(rows1[0].get_str(0), "alice@first.com", "Initial email is alice@first.com")
+nox.test.assert_eq_int(rows1[0].get_int(1), 1, "Initial login count is 1")
+
+# Second upsert with conflict on username: updates email and login_count
+s.upsert(user_tbl, {
+    "id": val_int(999),
+    "username": val_str("alice"),
+    "email": val_str("alice@updated.com"),
+    "login_count": val_int(5)
+}, ["username"], {
+    "email": val_str("alice@updated.com"),
+    "login_count": val_int(5)
+})
+
+nox.test.assert_eq_int(s.count(user_tbl), 1, "Still 1 record after conflict upsert")
+rows2: list[Row] = s.query_raw("SELECT email, login_count FROM users WHERE username = 'alice'", [])
+nox.test.assert_eq_str(rows2[0].get_str(0), "alice@updated.com", "Email updated on conflict")
+nox.test.assert_eq_int(rows2[0].get_int(1), 5, "Login count updated on conflict")
+
+# Third upsert: DO NOTHING on conflict
+s.upsert(user_tbl, {
+    "id": val_int(888),
+    "username": val_str("alice"),
+    "email": val_str("alice@ignored.com"),
+    "login_count": val_int(10)
+}, ["username"], {})
+
+rows3: list[Row] = s.query_raw("SELECT email, login_count FROM users WHERE username = 'alice'", [])
+nox.test.assert_eq_str(rows3[0].get_str(0), "alice@updated.com", "Email unchanged after DO NOTHING")
+nox.test.assert_eq_int(rows3[0].get_int(1), 5, "Login count unchanged after DO NOTHING")
+
+# 3. Validation errors
+empty_target_failed: bool = False
+try:
+    empty_list: list[str] = []
+    s.upsert(user_tbl, {"id": val_int(2)}, empty_list, {})
+except QueryBuildError as e:
+    empty_target_failed = True
+nox.test.assert_true(empty_target_failed, "Empty conflict target raises QueryBuildError on SQLite")
+
+non_existent_col_failed: bool = False
+try:
+    s.upsert(user_tbl, {"id": val_int(2)}, ["non_existent_col"], {})
+except QueryBuildError as e:
+    non_existent_col_failed = True
+nox.test.assert_true(non_existent_col_failed, "Non-existent conflict target column raises QueryBuildError")
+
+malicious_target_failed: bool = False
+try:
+    s.upsert(user_tbl, {"id": val_int(2)}, ["username; DROP TABLE users"], {})
+except IdentifierError as e:
+    malicious_target_failed = True
+nox.test.assert_true(malicious_target_failed, "Malicious identifier in conflict target raises IdentifierError")
+
+s.close()
+print("upsert_test passed")

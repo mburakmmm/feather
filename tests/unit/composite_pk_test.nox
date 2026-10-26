@@ -1,0 +1,151 @@
+# tests/unit/composite_pk_test.nox — Unit and integration tests for composite primary keys.
+
+import nox.test
+import metadata
+from metadata import Column, Table, col_int, col_str, col_float, table
+import dialects
+from dialects import sqlite_dialect, postgres_dialect, mysql_dialect, Dialect
+import session
+from session import Session, create_session
+import value
+from value import val_int, val_float, val_str, Value
+import mapper
+from mapper import Model, row_get_int, row_get_float
+import errors
+from errors import QueryBuildError
+import nox.sqlite
+
+# 1. Table schema with composite primary key
+order_items_tbl: Table = table("order_items", [
+    col_int("order_id", True),
+    col_int("item_id", True),
+    col_int("quantity"),
+    col_float("unit_price")
+])
+
+nox.test.assert_true(order_items_tbl.is_composite_pk(), "order_items has composite pk")
+nox.test.assert_eq_int(len(order_items_tbl.primary_keys), 2, "2 pk columns")
+nox.test.assert_eq_str(order_items_tbl.primary_keys[0], "order_id", "pk 1 is order_id")
+nox.test.assert_eq_str(order_items_tbl.primary_keys[1], "item_id", "pk 2 is item_id")
+nox.test.assert_eq_str(order_items_tbl.primary_key, "", "single primary_key is empty for composite")
+
+# 2. Dialect DDL generation checks
+d_sqlite: Dialect = sqlite_dialect()
+sql_sqlite: str = d_sqlite.create_table_sql(order_items_tbl)
+nox.test.assert_true(nox.strings.contains(sql_sqlite, "\"order_id\" INTEGER NOT NULL"), "sqlite has integer not null order_id")
+nox.test.assert_true(nox.strings.contains(sql_sqlite, "\"item_id\" INTEGER NOT NULL"), "sqlite has integer not null item_id")
+nox.test.assert_true(nox.strings.contains(sql_sqlite, "PRIMARY KEY (\"order_id\", \"item_id\")"), "sqlite has composite PRIMARY KEY clause")
+
+d_pg: Dialect = postgres_dialect()
+sql_pg: str = d_pg.create_table_sql(order_items_tbl)
+nox.test.assert_true(nox.strings.contains(sql_pg, "\"order_id\" INTEGER NOT NULL"), "pg has integer not null order_id")
+nox.test.assert_true(nox.strings.contains(sql_pg, "PRIMARY KEY (\"order_id\", \"item_id\")"), "pg has composite PRIMARY KEY clause")
+
+d_my: Dialect = mysql_dialect()
+sql_my: str = d_my.create_table_sql(order_items_tbl)
+nox.test.assert_true(nox.strings.contains(sql_my, "`order_id` INT NOT NULL"), "mysql has int not null order_id")
+nox.test.assert_true(nox.strings.contains(sql_my, "PRIMARY KEY (`order_id`, `item_id`)"), "mysql has composite PRIMARY KEY clause")
+
+# 3. Model definition for OrderItem
+class OrderItem:
+    order_id: int
+    item_id: int
+    quantity: int
+    unit_price: float
+
+    def __init__(self: OrderItem, order_id: int, item_id: int, quantity: int, unit_price: float) -> None:
+        self.order_id = order_id
+        self.item_id = item_id
+        self.quantity = quantity
+        self.unit_price = unit_price
+
+def decode_order_item(r: nox.db.Row) -> OrderItem:
+    return OrderItem(
+        row_get_int(r, 0),
+        row_get_int(r, 1),
+        row_get_int(r, 2),
+        row_get_float(r, 3)
+    )
+
+def encode_order_item(item: OrderItem) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["order_id"] = val_int(item.order_id)
+    d["item_id"] = val_int(item.item_id)
+    d["quantity"] = val_int(item.quantity)
+    d["unit_price"] = val_float(item.unit_price)
+    return d
+
+# 4. Database CRUD with composite PK in SQLite memory
+raw_conn: nox.sqlite.Connection = nox.sqlite.open(":memory:")
+sess: Session = create_session(raw_conn, d_sqlite, True)
+sess.create_table(order_items_tbl)
+
+m: Model[OrderItem] = Model[OrderItem](order_items_tbl, decode_order_item, encode_order_item)
+
+# Insert rows
+sess.insert(order_items_tbl, {
+    "order_id": val_int(1),
+    "item_id": val_int(101),
+    "quantity": val_int(2),
+    "unit_price": val_float(19.99)
+})
+sess.insert(order_items_tbl, {
+    "order_id": val_int(1),
+    "item_id": val_int(102),
+    "quantity": val_int(1),
+    "unit_price": val_float(49.99)
+})
+sess.insert(order_items_tbl, {
+    "order_id": val_int(2),
+    "item_id": val_int(101),
+    "quantity": val_int(5),
+    "unit_price": val_float(19.99)
+})
+
+nox.test.assert_eq_int(sess.count(order_items_tbl), 3, "total 3 items inserted")
+
+# Find by composite PK
+item_opt: OrderItem | None = sess.find_by_pk[OrderItem](m, {
+    "order_id": val_int(1),
+    "item_id": val_int(102)
+})
+nox.test.assert_true(item_opt is not None, "item found by composite pk")
+if item_opt is not None:
+    it: OrderItem = item_opt
+    nox.test.assert_eq_int(it.quantity, 1, "quantity is 1")
+    nox.test.assert_eq_float(it.unit_price, 49.99, "price is 49.99")
+
+# Update by composite PK
+sess.update_by_pk(order_items_tbl, {
+    "order_id": val_int(1),
+    "item_id": val_int(102)
+}, {
+    "quantity": val_int(3)
+})
+
+it_updated: OrderItem | None = sess.find_by_pk[OrderItem](m, {
+    "order_id": val_int(1),
+    "item_id": val_int(102)
+})
+nox.test.assert_true(it_updated is not None, "updated item found")
+if it_updated is not None:
+    it2: OrderItem = it_updated
+    nox.test.assert_eq_int(it2.quantity, 3, "quantity updated to 3")
+
+# Delete by composite PK
+sess.delete_by_pk(order_items_tbl, {
+    "order_id": val_int(1),
+    "item_id": val_int(101)
+})
+nox.test.assert_eq_int(sess.count(order_items_tbl), 2, "2 items left after delete")
+
+# Missing PK key raises QueryBuildError
+missing_key_failed: bool = False
+try:
+    sess.find_by_pk[OrderItem](m, {"order_id": val_int(1)})
+except QueryBuildError as e:
+    missing_key_failed = True
+nox.test.assert_true(missing_key_failed, "omitting item_id from composite pk query raises QueryBuildError")
+
+sess.close()
+print("composite_pk_test passed")

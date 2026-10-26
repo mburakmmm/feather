@@ -1,0 +1,111 @@
+# tests/integration/many_to_many_test.nox — Integration tests for many-to-many relationships through a pivot table.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Table, Column, col_int, col_str, table, val_int, val_str, Value, Relation, RelationLoader, many_to_many, has_many, REL_MANY_TO_MANY
+import mapper
+from mapper import Model, row_get_int, row_get_str
+import errors
+from errors import RelationError
+import nox.db
+from nox.db import Row
+
+# 1. Models
+class User:
+    id: int
+    username: str
+
+    def __init__(self: User, id: int, username: str) -> None:
+        self.id = id
+        self.username = username
+
+def decode_user(r: Row) -> User:
+    return User(row_get_int(r, 0), row_get_str(r, 1))
+
+def encode_user(u: User) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(u.id)
+    d["username"] = val_str(u.username)
+    return d
+
+class Role:
+    id: int
+    name: str
+
+    def __init__(self: Role, id: int, name: str) -> None:
+        self.id = id
+        self.name = name
+
+def decode_role(r: Row) -> Role:
+    return Role(row_get_int(r, 0), row_get_str(r, 1))
+
+def encode_role(ro: Role) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(ro.id)
+    d["name"] = val_str(ro.name)
+    return d
+
+# 2. Schema definitions
+user_tbl: Table = table("users", [col_int("id", True, False, True), col_str("username")])
+role_tbl: Table = table("roles", [col_int("id", True, False, True), col_str("name")])
+# Pivot table with composite primary key
+user_roles_tbl: Table = table("user_roles", [
+    col_int("user_id", True),
+    col_int("role_id", True)
+])
+
+user_m: Model[User] = Model[User](user_tbl, decode_user, encode_user)
+role_m: Model[Role] = Model[Role](role_tbl, decode_role, encode_role)
+
+# 3. Setup SQLite memory database
+s: Session = open_sqlite_memory()
+s.create_table(user_tbl)
+s.create_table(role_tbl)
+s.create_table(user_roles_tbl)
+
+# Seed Users
+u1_id: int = s.insert(user_tbl, {"username": val_str("alice")})
+u2_id: int = s.insert(user_tbl, {"username": val_str("bob")})
+
+# Seed Roles
+r1_id: int = s.insert(role_tbl, {"name": val_str("Admin")})
+r2_id: int = s.insert(role_tbl, {"name": val_str("Editor")})
+r3_id: int = s.insert(role_tbl, {"name": val_str("Viewer")})
+
+# Seed Pivot Table: Alice -> Admin, Editor; Bob -> Viewer
+s.insert(user_roles_tbl, {"user_id": val_int(u1_id), "role_id": val_int(r1_id)})
+s.insert(user_roles_tbl, {"user_id": val_int(u1_id), "role_id": val_int(r2_id)})
+s.insert(user_roles_tbl, {"user_id": val_int(u2_id), "role_id": val_int(r3_id)})
+
+# 4. Relation definition
+rel_roles: Relation = many_to_many("roles", "users", "roles", "user_roles", "user_id", "role_id")
+nox.test.assert_eq_int(rel_roles.rel_type, REL_MANY_TO_MANY, "rel_type is many_to_many")
+nox.test.assert_eq_str(rel_roles.through_table, "user_roles", "through_table is user_roles")
+
+# 5. Load Alice's roles
+loader: RelationLoader = RelationLoader(s)
+alice_roles: list[Role] = loader.load_many_to_many[Role](role_m, "user_roles", "user_id", "role_id", val_int(u1_id), "id")
+nox.test.assert_eq_int(len(alice_roles), 2, "Alice has 2 roles")
+nox.test.assert_eq_str(alice_roles[0].name, "Admin", "First role is Admin")
+nox.test.assert_eq_str(alice_roles[1].name, "Editor", "Second role is Editor")
+
+# Load via Relation object
+alice_roles2: list[Role] = loader.load_relation_many_to_many[Role](rel_roles, role_m, val_int(u1_id))
+nox.test.assert_eq_int(len(alice_roles2), 2, "Alice has 2 roles via load_relation_many_to_many")
+
+# Load Bob's roles
+bob_roles: list[Role] = loader.load_relation_many_to_many[Role](rel_roles, role_m, val_int(u2_id))
+nox.test.assert_eq_int(len(bob_roles), 1, "Bob has 1 role")
+nox.test.assert_eq_str(bob_roles[0].name, "Viewer", "Bob's role is Viewer")
+
+# 6. Type guard check: passing non-many_to_many relation to load_relation_many_to_many raises RelationError
+invalid_rel: Relation = has_many("items", "users", "items", "user_id", "id")
+type_guard_failed: bool = False
+try:
+    loader.load_relation_many_to_many[Role](invalid_rel, role_m, val_int(u1_id))
+except RelationError as e:
+    type_guard_failed = True
+nox.test.assert_true(type_guard_failed, "calling load_relation_many_to_many with has_many raises RelationError")
+
+s.close()
+print("many_to_many_test passed")

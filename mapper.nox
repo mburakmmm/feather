@@ -8,6 +8,8 @@ import value
 from value import Value, val_int, val_str, val_float, val_bool, val_null
 import errors
 from errors import MappingError
+import types
+from types import Decimal, DateTime, UUID, decimal, parse_iso_datetime, uuid_parse
 
 def row_is_null(row: Row, idx: int) -> bool:
     return row.is_null(idx)
@@ -54,6 +56,33 @@ def row_get_opt_bool(row: Row, idx: int) -> bool | None:
     if row.is_null(idx):
         return None
     return row_get_bool(row, idx)
+
+def row_get_decimal(row: Row, idx: int) -> Decimal:
+    s: str = row_get_str(row, idx)
+    return decimal(s)
+
+def row_get_opt_decimal(row: Row, idx: int) -> Decimal | None:
+    if row.is_null(idx):
+        return None
+    return decimal(row.get_str(idx))
+
+def row_get_datetime(row: Row, idx: int) -> DateTime:
+    s: str = row_get_str(row, idx)
+    return parse_iso_datetime(s)
+
+def row_get_opt_datetime(row: Row, idx: int) -> DateTime | None:
+    if row.is_null(idx):
+        return None
+    return parse_iso_datetime(row.get_str(idx))
+
+def row_get_uuid(row: Row, idx: int) -> UUID:
+    s: str = row_get_str(row, idx)
+    return uuid_parse(s)
+
+def row_get_opt_uuid(row: Row, idx: int) -> UUID | None:
+    if row.is_null(idx):
+        return None
+    return uuid_parse(row.get_str(idx))
 
 def find_column_index(row: Row, col_name: str) -> int:
     n: int = row.column_count()

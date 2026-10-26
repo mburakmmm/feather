@@ -11,6 +11,44 @@ from errors import MigrationError
 import nox.db
 from nox.db import Row
 
+def _int_to_hex(n: int) -> str:
+    if n == 0:
+        return "00000000"
+    val: int = n
+    if val < 0:
+        val = -val
+    chars: list[str] = []
+    hex_digits: str = "0123456789abcdef"
+    while val > 0:
+        rem: int = val % 16
+        chars.append(hex_digits[rem])
+        val = val // 16
+    while len(chars) < 8:
+        chars.append("0")
+    res: str = ""
+    idx: int = len(chars) - 1
+    while idx >= 0:
+        res = res + chars[idx]
+        idx = idx - 1
+    return res
+
+def compute_string_checksum(s: str) -> str:
+    h: int = 5381
+    i: int = 0
+    while i < len(s):
+        c: int = ord(s[i])
+        h = ((h * 33) + c) % 2147483647
+        i = i + 1
+    return _int_to_hex(h)
+
+def compute_migration_checksum(m: Migration) -> str:
+    combined: str = m.name + ":"
+    i: int = 0
+    while i < len(m.up_sqls):
+        combined = combined + m.up_sqls[i] + ";"
+        i = i + 1
+    return compute_string_checksum(combined)
+
 class Migration:
     version: int
     name: str
@@ -24,6 +62,9 @@ class Migration:
         self.name = name
         self.up_sqls = up_sqls
         self.down_sqls = down_sqls
+
+    def get_checksum(self: Migration) -> str:
+        return compute_migration_checksum(self)
 
 def migration(version: int, name: str, up_sqls: list[str], down_sqls: list[str]) -> Migration:
     return Migration(version, name, up_sqls, down_sqls)
@@ -42,15 +83,40 @@ class MigrationManager:
         q_id: str = self.session.dialect.quote_identifier("id")
         q_ver: str = self.session.dialect.quote_identifier("version")
         q_name: str = self.session.dialect.quote_identifier("name")
+        q_check: str = self.session.dialect.quote_identifier("checksum")
         q_time: str = self.session.dialect.quote_identifier("applied_at")
 
         pk_col: str = "INTEGER PRIMARY KEY AUTOINCREMENT"
         if self.session.dialect.supports_returning():
             pk_col = "SERIAL PRIMARY KEY"
 
-        sql: str = "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " " + pk_col + ", " + q_ver + " INTEGER NOT NULL UNIQUE, " + q_name + " TEXT NOT NULL, " + q_time + " TEXT NOT NULL)"
+        sql: str = "CREATE TABLE IF NOT EXISTS " + q_table + " (" + q_id + " " + pk_col + ", " + q_ver + " INTEGER NOT NULL UNIQUE, " + q_name + " TEXT NOT NULL, " + q_check + " TEXT NOT NULL, " + q_time + " TEXT NOT NULL)"
         empty_params: list[Value] = []
         self.session.execute_raw(sql, empty_params)
+
+    def verify_checksums(self: MigrationManager) -> None:
+
+        self.init_table()
+        q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
+        q_ver: str = self.session.dialect.quote_identifier("version")
+        q_check: str = self.session.dialect.quote_identifier("checksum")
+        sql: str = "SELECT " + q_ver + ", " + q_check + " FROM " + q_table + " ORDER BY " + q_ver + " ASC"
+        empty_params: list[Value] = []
+        rows: list[Row] = self.session.query_raw(sql, empty_params)
+
+        r_idx: int = 0
+        while r_idx < len(rows):
+            v: int = rows[r_idx].get_int(0)
+            rec_sum: str = rows[r_idx].get_str(1)
+            m_idx: int = 0
+            while m_idx < len(self.migrations):
+                m: Migration = self.migrations[m_idx]
+                if m.version == v:
+                    curr_sum: str = m.get_checksum()
+                    if rec_sum != "" and rec_sum != curr_sum:
+                        raise MigrationError("migration checksum mismatch for version " + str(m.version) + " (" + m.name + "): recorded checksum " + rec_sum + ", but code checksum is " + curr_sum)
+                m_idx = m_idx + 1
+            r_idx = r_idx + 1
 
     def get_applied_versions(self: MigrationManager) -> list[int]:
 
@@ -98,6 +164,7 @@ class MigrationManager:
     def migrate_up(self: MigrationManager) -> int:
 
         self.init_table()
+        self.verify_checksums()
         pending: list[Migration] = self.get_pending_migrations()
         count: int = 0
 
@@ -117,14 +184,16 @@ class MigrationManager:
                 q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
                 q_ver: str = self.session.dialect.quote_identifier("version")
                 q_name: str = self.session.dialect.quote_identifier("name")
+                q_check: str = self.session.dialect.quote_identifier("checksum")
                 q_time: str = self.session.dialect.quote_identifier("applied_at")
 
                 ph1: str = self.session.dialect.placeholder(0)
                 ph2: str = self.session.dialect.placeholder(1)
                 ph3: str = self.session.dialect.placeholder(2)
+                ph4: str = self.session.dialect.placeholder(3)
 
-                record_sql: str = "INSERT INTO " + q_table + " (" + q_ver + ", " + q_name + ", " + q_time + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ")"
-                rec_params: list[Value] = [val_int(m.version), val_str(m.name), val_str("now")]
+                record_sql: str = "INSERT INTO " + q_table + " (" + q_ver + ", " + q_name + ", " + q_check + ", " + q_time + ") VALUES (" + ph1 + ", " + ph2 + ", " + ph3 + ", " + ph4 + ")"
+                rec_params: list[Value] = [val_int(m.version), val_str(m.name), val_str(m.get_checksum()), val_str("now")]
                 self.session.execute_raw(record_sql, rec_params)
 
                 tx.commit()

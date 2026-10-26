@@ -51,14 +51,13 @@ except QueryBuildError as e1:
     dup_failed = True
 nox.test.assert_true(dup_failed, "Table creation fails when duplicate columns are provided")
 
-# Multiple primary keys error
-multi_pk_cols: list[Column] = [col_int("id1", True), col_int("id2", True)]
-multi_failed: bool = False
-try:
-    tbl_multi: Table = table("multi_pk", multi_pk_cols)
-except QueryBuildError as e2:
-    multi_failed = True
-nox.test.assert_true(multi_failed, "Table creation fails when multiple primary keys are provided")
+# Composite primary keys support
+multi_pk_cols: list[Column] = [col_int("id1", True), col_int("id2", True), col_str("name")]
+tbl_multi: Table = table("multi_pk", multi_pk_cols)
+nox.test.assert_true(tbl_multi.is_composite_pk(), "tbl_multi is composite pk")
+nox.test.assert_eq_int(len(tbl_multi.primary_keys), 2, "2 primary key columns registered")
+nox.test.assert_eq_str(tbl_multi.primary_keys[0], "id1", "first pk is id1")
+nox.test.assert_eq_str(tbl_multi.primary_keys[1], "id2", "second pk is id2")
 
 # Invalid table identifier
 invalid_id_failed: bool = False

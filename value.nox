@@ -4,6 +4,8 @@ import nox.db
 from nox.db import Statement
 import errors
 from errors import BindingError
+import types
+from types import Decimal, DateTime, UUID
 
 VAL_INT: int = 1
 VAL_FLOAT: int = 2
@@ -71,6 +73,15 @@ def val_bool(b: bool) -> Value:
 
 def val_null() -> Value:
     return Value(VAL_NULL, 0, 0.0, "", False, True)
+
+def val_decimal(d: Decimal) -> Value:
+    return Value(VAL_STR, 0, 0.0, d.to_string(), False, False)
+
+def val_datetime(dt: DateTime) -> Value:
+    return Value(VAL_STR, 0, 0.0, dt.format_iso(), False, False)
+
+def val_uuid(u: UUID) -> Value:
+    return Value(VAL_STR, 0, 0.0, u.to_string(), False, False)
 
 def bind_value(stmt: Statement, idx: int, v: Value) -> None:
     if v.kind == VAL_INT:

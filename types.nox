@@ -1,0 +1,170 @@
+# types.nox — Advanced SQL data types and codecs (Decimal, DateTime, UUID).
+
+import errors
+from errors import MappingError
+import nox.strings
+
+# ---------------------------------------------------------------------------
+# 1. Decimal (Lossless arbitrary-precision numeric representation)
+# ---------------------------------------------------------------------------
+
+class Decimal:
+    raw: str
+
+    def __init__(self: Decimal, raw: str) -> None:
+        trimmed: str = nox.strings.trim(raw)
+        if len(trimmed) == 0:
+            raise MappingError("invalid decimal: empty string")
+
+        has_dot: bool = False
+        start: int = 0
+        if trimmed[0] == "-" or trimmed[0] == "+":
+            start = 1
+            if len(trimmed) == 1:
+                raise MappingError("invalid decimal: sign without digits")
+
+        i: int = start
+        while i < len(trimmed):
+            c: str = trimmed[i]
+            if c == ".":
+                if has_dot:
+                    raise MappingError("invalid decimal: multiple decimal points in " + raw)
+                has_dot = True
+            elif c >= "0" and c <= "9":
+                pass
+            else:
+                raise MappingError("invalid decimal character '" + c + "' in " + raw)
+            i = i + 1
+
+        self.raw = trimmed
+
+    def to_string(self: Decimal) -> str:
+        return self.raw
+
+    def to_float(self: Decimal) -> float:
+        return float(self.raw)
+
+    def equals(self: Decimal, other: Decimal) -> bool:
+        return self.raw == other.raw
+
+def decimal(raw: str) -> Decimal:
+    return Decimal(raw)
+
+# ---------------------------------------------------------------------------
+# 2. DateTime (ISO-8601 UTC timestamp representation)
+# ---------------------------------------------------------------------------
+
+class DateTime:
+    year: int
+    month: int
+    day: int
+    hour: int
+    minute: int
+    second: int
+
+    def __init__(self: DateTime, year: int, month: int, day: int, hour: int, minute: int, second: int) -> None:
+        if month < 1 or month > 12:
+            raise MappingError("invalid month: " + str(month))
+        if day < 1 or day > 31:
+            raise MappingError("invalid day: " + str(day))
+        if hour < 0 or hour > 23:
+            raise MappingError("invalid hour: " + str(hour))
+        if minute < 0 or minute > 59:
+            raise MappingError("invalid minute: " + str(minute))
+        if second < 0 or second > 59:
+            raise MappingError("invalid second: " + str(second))
+
+        self.year = year
+        self.month = month
+        self.day = day
+        self.hour = hour
+        self.minute = minute
+        self.second = second
+
+    def format_iso(self: DateTime) -> str:
+        y_str: str = str(self.year)
+        m_str: str = str(self.month)
+        if self.month < 10:
+            m_str = "0" + m_str
+        d_str: str = str(self.day)
+        if self.day < 10:
+            d_str = "0" + d_str
+        h_str: str = str(self.hour)
+        if self.hour < 10:
+            h_str = "0" + h_str
+        min_str: str = str(self.minute)
+        if self.minute < 10:
+            min_str = "0" + min_str
+        s_str: str = str(self.second)
+        if self.second < 10:
+            s_str = "0" + s_str
+
+        return y_str + "-" + m_str + "-" + d_str + "T" + h_str + ":" + min_str + ":" + s_str + "Z"
+
+    def equals(self: DateTime, other: DateTime) -> bool:
+        return (self.year == other.year and
+                self.month == other.month and
+                self.day == other.day and
+                self.hour == other.hour and
+                self.minute == other.minute and
+                self.second == other.second)
+
+def datetime(year: int, month: int, day: int, hour: int, minute: int, second: int) -> DateTime:
+    return DateTime(year, month, day, hour, minute, second)
+
+def parse_iso_datetime(s: str) -> DateTime:
+    trimmed: str = nox.strings.trim(s)
+    # Expected format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS (length >= 19)
+    if len(trimmed) < 19:
+        raise MappingError("invalid ISO datetime string (too short): " + s)
+
+    y_str: str = ""
+    i: int = 0
+    while i < 4:
+        y_str = y_str + trimmed[i]
+        i = i + 1
+    m_str: str = trimmed[5] + trimmed[6]
+    d_str: str = trimmed[8] + trimmed[9]
+    h_str: str = trimmed[11] + trimmed[12]
+    min_str: str = trimmed[14] + trimmed[15]
+    s_str: str = trimmed[17] + trimmed[18]
+
+    return DateTime(int(y_str), int(m_str), int(d_str), int(h_str), int(min_str), int(s_str))
+
+# ---------------------------------------------------------------------------
+# 3. UUID (36-character canonical 8-4-4-4-12 hex string)
+# ---------------------------------------------------------------------------
+
+def _is_hex(c: str) -> bool:
+    return (c >= "0" and c <= "9") or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")
+
+def is_valid_uuid(s: str) -> bool:
+    if len(s) != 36:
+        return False
+    if s[8] != "-" or s[13] != "-" or s[18] != "-" or s[23] != "-":
+        return False
+    i: int = 0
+    while i < 36:
+        if i != 8 and i != 13 and i != 18 and i != 23:
+            if not _is_hex(s[i]):
+                return False
+        i = i + 1
+    return True
+
+class UUID:
+    value: str
+
+    def __init__(self: UUID, value: str) -> None:
+        trimmed: str = nox.strings.trim(value)
+        if not is_valid_uuid(trimmed):
+            raise MappingError("invalid UUID format: " + value + " (expected 8-4-4-4-12 hex string)")
+        self.value = nox.strings.lower(trimmed)
+
+    def to_string(self: UUID) -> str:
+        return self.value
+
+    def equals(self: UUID, other: UUID) -> bool:
+        return self.value == other.value
+
+def uuid_parse(s: str) -> UUID:
+    return UUID(s)

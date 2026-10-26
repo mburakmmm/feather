@@ -150,3 +150,47 @@ Defines belongs-to foreign key relation.
 - `load_has_many[C](child_model: Model[C], fk_column: str, parent_pk_val: Value) -> list[C]`
 - `load_belongs_to[P](parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None`
 - `load_has_one[C](child_model: Model[C], fk_column: str, parent_pk_val: Value) -> C | None`
+- `load_many_to_many[T](target_model: Model[T], through_table: str, source_fk: str, target_fk: str, source_pk_val: Value, target_pk_col: str = "id") -> list[T]`
+- `load_relation_many_to_many[T](rel: Relation, target_model: Model[T], source_pk_val: Value) -> list[T]`
+
+### `many_to_many(name: str, source_table: str, target_table: str, through_table: str, source_fk: str, target_fk: str, target_pk: str = "id") -> Relation`
+Defines a many-to-many relationship through a pivot/join table.
+
+---
+
+## Batch & Advanced CRUD Operations
+
+### `session.insert_many(tbl: Table, rows: list[dict[str, Value]]) -> int`
+Batch-inserts multiple records into `tbl` in a single SQL statement using multi-row `VALUES (?, ?), (?, ?)...`.
+
+### `session.upsert(tbl: Table, values: dict[str, Value], conflict_target: list[str], update_values: dict[str, Value]) -> int`
+Executes an upsert operation. Emits `ON CONFLICT (...) DO UPDATE SET ...` / `DO NOTHING` on SQLite & PostgreSQL, and `ON DUPLICATE KEY UPDATE` on MySQL.
+
+### Composite Primary Key CRUD
+- `session.update_by_pk(tbl: Table, pk_values: dict[str, Value], values: dict[str, Value]) -> int`
+- `session.delete_by_pk(tbl: Table, pk_values: dict[str, Value]) -> int`
+- `session.find_by_pk[T](model: Model[T], pk_values: dict[str, Value]) -> T | None`
+
+---
+
+## SQL Aggregates & Grouping
+
+- `count_all() -> str`: Emits `COUNT(*)`.
+- `count_col(col: str) -> str`: Emits `COUNT("col")`.
+- `sum_col(col: str) -> str`: Emits `SUM("col")`.
+- `avg_col(col: str) -> str`: Emits `AVG("col")`.
+- `min_col(col: str) -> str`: Emits `MIN("col")`.
+- `max_col(col: str) -> str`: Emits `MAX("col")`.
+- `SelectQuery.group_by(cols: list[str]) -> SelectQuery`: Emits `GROUP BY "col1", "col2"`.
+- `SelectQuery.having(pred: Predicate) -> SelectQuery`: Emits parameterized `HAVING` clause.
+
+---
+
+## Lossless Type Codecs
+
+- `decimal(str_val: str) -> Decimal`: Lossless fixed-point / monetary value.
+- `datetime(year, month, day, hour, minute, second) -> DateTime`: ISO-8601 UTC date-time.
+- `parse_iso_datetime(iso_str: str) -> DateTime`: Parses ISO-8601 timestamp string (`YYYY-MM-DDTHH:MM:SSZ`).
+- `uuid_parse(uuid_str: str) -> UUID`: Validates and parses 36-char canonical hex UUID string.
+- Row getters: `row_get_decimal`, `row_get_opt_decimal`, `row_get_datetime`, `row_get_opt_datetime`, `row_get_uuid`, `row_get_opt_uuid`.
+- Value constructors: `val_decimal`, `val_datetime`, `val_uuid`.

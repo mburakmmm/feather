@@ -1,2 +1,2 @@
 import query
-from query import SelectQuery, WhereClause, Predicate, CompiledQuery, JoinClause, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, select, select_all, OP_EQ, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, LOGIC_AND, LOGIC_OR, ORDER_ASC, ORDER_DESC, JOIN_INNER, JOIN_LEFT
+from query import SelectQuery, WhereClause, Predicate, CompiledQuery, JoinClause, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, select, select_all, count_all, count_col, sum_col, avg_col, min_col, max_col, OP_EQ, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, LOGIC_AND, LOGIC_OR, ORDER_ASC, ORDER_DESC, JOIN_INNER, JOIN_LEFT

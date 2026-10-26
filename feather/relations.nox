@@ -1,2 +1,2 @@
 import relations
-from relations import Relation, RelationLoader, has_one, has_many, belongs_to, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO
+from relations import Relation, RelationLoader, has_one, has_many, belongs_to, many_to_many, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO, REL_MANY_TO_MANY

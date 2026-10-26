@@ -30,14 +30,10 @@ class Dialect:
             return "$" + str(idx + 1)
         return "?"
 
-    def column_type_sql(self: Dialect, col: Column) -> str:
+    def column_base_type_sql(self: Dialect, col: Column) -> str:
 
         if self.kind == DIALECT_SQLITE:
             if col.data_type == TYPE_INTEGER:
-                if col.is_primary_key:
-                    if col.is_auto_increment:
-                        return "INTEGER PRIMARY KEY AUTOINCREMENT"
-                    return "INTEGER PRIMARY KEY"
                 return "INTEGER"
             if col.data_type == TYPE_REAL:
                 return "REAL"
@@ -47,10 +43,6 @@ class Dialect:
 
         if self.kind == DIALECT_POSTGRES:
             if col.data_type == TYPE_INTEGER:
-                if col.is_primary_key:
-                    if col.is_auto_increment:
-                        return "SERIAL PRIMARY KEY"
-                    return "INTEGER PRIMARY KEY"
                 return "INTEGER"
             if col.data_type == TYPE_REAL:
                 return "DOUBLE PRECISION"
@@ -60,10 +52,6 @@ class Dialect:
 
         if self.kind == DIALECT_MYSQL:
             if col.data_type == TYPE_INTEGER:
-                if col.is_primary_key:
-                    if col.is_auto_increment:
-                        return "INT AUTO_INCREMENT PRIMARY KEY"
-                    return "INT PRIMARY KEY"
                 return "INT"
             if col.data_type == TYPE_REAL:
                 return "DOUBLE"
@@ -73,22 +61,62 @@ class Dialect:
 
         raise DialectError("unknown dialect kind: " + str(self.kind))
 
+    def column_type_sql(self: Dialect, col: Column) -> str:
+
+        if self.kind == DIALECT_SQLITE:
+            if col.data_type == TYPE_INTEGER and col.is_primary_key:
+                if col.is_auto_increment:
+                    return "INTEGER PRIMARY KEY AUTOINCREMENT"
+                return "INTEGER PRIMARY KEY"
+            return self.column_base_type_sql(col)
+
+        if self.kind == DIALECT_POSTGRES:
+            if col.data_type == TYPE_INTEGER and col.is_primary_key:
+                if col.is_auto_increment:
+                    return "SERIAL PRIMARY KEY"
+                return "INTEGER PRIMARY KEY"
+            return self.column_base_type_sql(col)
+
+        if self.kind == DIALECT_MYSQL:
+            if col.data_type == TYPE_INTEGER and col.is_primary_key:
+                if col.is_auto_increment:
+                    return "INT AUTO_INCREMENT PRIMARY KEY"
+                return "INT PRIMARY KEY"
+            return self.column_base_type_sql(col)
+
+        raise DialectError("unknown dialect kind: " + str(self.kind))
+
     def create_table_sql(self: Dialect, tbl: Table) -> str:
 
         q_table: str = self.quote_identifier(tbl.name)
         parts: list[str] = []
+        is_comp: bool = tbl.is_composite_pk()
         i: int = 0
         while i < len(tbl.columns):
             col: Column = tbl.columns[i]
             q_col: str = self.quote_identifier(col.name)
-            col_sql: str = q_col + " " + self.column_type_sql(col)
-            if not col.is_primary_key:
-                if not col.is_nullable:
-                    col_sql = col_sql + " NOT NULL"
+            col_sql: str = ""
+            if is_comp and col.is_primary_key:
+                col_sql = q_col + " " + self.column_base_type_sql(col) + " NOT NULL"
                 if col.is_unique:
                     col_sql = col_sql + " UNIQUE"
+            else:
+                col_sql = q_col + " " + self.column_type_sql(col)
+                if not col.is_primary_key:
+                    if not col.is_nullable:
+                        col_sql = col_sql + " NOT NULL"
+                    if col.is_unique:
+                        col_sql = col_sql + " UNIQUE"
             parts.append(col_sql)
             i = i + 1
+
+        if is_comp:
+            pks_quoted: list[str] = []
+            p_i: int = 0
+            while p_i < len(tbl.primary_keys):
+                pks_quoted.append(self.quote_identifier(tbl.primary_keys[p_i]))
+                p_i = p_i + 1
+            parts.append("PRIMARY KEY (" + nox.strings.join(pks_quoted, ", ") + ")")
 
         body: str = nox.strings.join(parts, ", ")
         return "CREATE TABLE IF NOT EXISTS " + q_table + " (" + body + ")"
@@ -96,6 +124,62 @@ class Dialect:
     def drop_table_sql(self: Dialect, tbl: Table) -> str:
 
         return "DROP TABLE IF EXISTS " + self.quote_identifier(tbl.name)
+
+    def upsert_sql(self: Dialect, tbl: Table, insert_cols: list[str], conflict_target: list[str], update_cols: list[str]) -> str:
+
+        q_table: str = self.quote_identifier(tbl.name)
+        quoted_ins: list[str] = []
+        ins_placeholders: list[str] = []
+        param_count: int = 0
+
+        i: int = 0
+        while i < len(insert_cols):
+            quoted_ins.append(self.quote_identifier(insert_cols[i]))
+            ins_placeholders.append(self.placeholder(param_count))
+            param_count = param_count + 1
+            i = i + 1
+
+        sql: str = "INSERT INTO " + q_table + " (" + nox.strings.join(quoted_ins, ", ") + ") VALUES (" + nox.strings.join(ins_placeholders, ", ") + ")"
+
+        if self.kind == DIALECT_SQLITE or self.kind == DIALECT_POSTGRES:
+            quoted_targets: list[str] = []
+            j: int = 0
+            while j < len(conflict_target):
+                quoted_targets.append(self.quote_identifier(conflict_target[j]))
+                j = j + 1
+            sql = sql + " ON CONFLICT (" + nox.strings.join(quoted_targets, ", ") + ")"
+            if len(update_cols) == 0:
+                sql = sql + " DO NOTHING"
+            else:
+                set_parts: list[str] = []
+                k: int = 0
+                while k < len(update_cols):
+                    q_u: str = self.quote_identifier(update_cols[k])
+                    ph: str = self.placeholder(param_count)
+                    set_parts.append(q_u + " = " + ph)
+                    param_count = param_count + 1
+                    k = k + 1
+                sql = sql + " DO UPDATE SET " + nox.strings.join(set_parts, ", ")
+
+        elif self.kind == DIALECT_MYSQL:
+            if len(update_cols) == 0:
+                pk: str = "id"
+                if tbl.primary_key != "":
+                    pk = tbl.primary_key
+                q_pk: str = self.quote_identifier(pk)
+                sql = sql + " ON DUPLICATE KEY UPDATE " + q_pk + " = " + q_pk
+            else:
+                set_parts2: list[str] = []
+                k2: int = 0
+                while k2 < len(update_cols):
+                    q_u2: str = self.quote_identifier(update_cols[k2])
+                    ph2: str = self.placeholder(param_count)
+                    set_parts2.append(q_u2 + " = " + ph2)
+                    param_count = param_count + 1
+                    k2 = k2 + 1
+                sql = sql + " ON DUPLICATE KEY UPDATE " + nox.strings.join(set_parts2, ", ")
+
+        return sql
 
     def boolean_sql(self: Dialect, b: bool) -> str:
 

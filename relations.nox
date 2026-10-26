@@ -13,9 +13,13 @@ from errors import RelationError
 import metadata
 from metadata import assert_valid_identifier
 
+import nox.db
+from nox.db import Row
+
 REL_HAS_ONE: int = 1
 REL_HAS_MANY: int = 2
 REL_BELONGS_TO: int = 3
+REL_MANY_TO_MANY: int = 4
 
 class Relation:
     name: str
@@ -24,28 +28,39 @@ class Relation:
     target_table: str
     foreign_key: str
     primary_key: str
+    through_table: str
+    target_foreign_key: str
 
-    def __init__(self: Relation, name: str, rel_type: int, source_table: str, target_table: str, foreign_key: str, primary_key: str) -> None:
+    def __init__(self: Relation, name: str, rel_type: int, source_table: str, target_table: str, foreign_key: str, primary_key: str, through_table: str = "", target_foreign_key: str = "") -> None:
         assert_valid_identifier(name, "relation name")
         assert_valid_identifier(source_table, "source table")
         assert_valid_identifier(target_table, "target table")
         assert_valid_identifier(foreign_key, "foreign key")
         assert_valid_identifier(primary_key, "primary key")
+        if through_table != "":
+            assert_valid_identifier(through_table, "through table")
+        if target_foreign_key != "":
+            assert_valid_identifier(target_foreign_key, "target foreign key")
         self.name = name
         self.rel_type = rel_type
         self.source_table = source_table
         self.target_table = target_table
         self.foreign_key = foreign_key
         self.primary_key = primary_key
+        self.through_table = through_table
+        self.target_foreign_key = target_foreign_key
 
 def has_one(name: str, source_table: str, target_table: str, foreign_key: str, primary_key: str) -> Relation:
-    return Relation(name, REL_HAS_ONE, source_table, target_table, foreign_key, primary_key)
+    return Relation(name, REL_HAS_ONE, source_table, target_table, foreign_key, primary_key, "", "")
 
 def has_many(name: str, parent_table: str, child_table: str, foreign_key: str, primary_key: str) -> Relation:
-    return Relation(name, REL_HAS_MANY, parent_table, child_table, foreign_key, primary_key)
+    return Relation(name, REL_HAS_MANY, parent_table, child_table, foreign_key, primary_key, "", "")
 
 def belongs_to(name: str, child_table: str, parent_table: str, foreign_key: str, primary_key: str) -> Relation:
-    return Relation(name, REL_BELONGS_TO, child_table, parent_table, foreign_key, primary_key)
+    return Relation(name, REL_BELONGS_TO, child_table, parent_table, foreign_key, primary_key, "", "")
+
+def many_to_many(name: str, source_table: str, target_table: str, through_table: str, source_fk: str, target_fk: str, target_pk: str = "id") -> Relation:
+    return Relation(name, REL_MANY_TO_MANY, source_table, target_table, source_fk, target_pk, through_table, target_fk)
 
 class RelationLoader:
     session: Session
@@ -78,3 +93,29 @@ class RelationLoader:
         if len(rows) > 0:
             return rows[0]
         return None
+
+    def load_many_to_many[T](self: RelationLoader, target_model: Model[T], through_table: str, source_fk: str, target_fk: str, source_pk_val: Value, target_pk_col: str = "id") -> list[T]:
+
+        assert_valid_identifier(through_table, "through table")
+        assert_valid_identifier(source_fk, "source foreign key")
+        assert_valid_identifier(target_fk, "target foreign key")
+        assert_valid_identifier(target_pk_col, "target primary key")
+
+        target_quoted: str = self.session.dialect.quote_identifier(target_model.table.name)
+        through_quoted: str = self.session.dialect.quote_identifier(through_table)
+        target_pk_quoted: str = self.session.dialect.quote_identifier(target_pk_col)
+        target_fk_quoted: str = self.session.dialect.quote_identifier(target_fk)
+        source_fk_quoted: str = self.session.dialect.quote_identifier(source_fk)
+
+        ph0: str = self.session.dialect.placeholder(0)
+        sql: str = "SELECT " + target_quoted + ".* FROM " + target_quoted + " INNER JOIN " + through_quoted + " ON " + target_quoted + "." + target_pk_quoted + " = " + through_quoted + "." + target_fk_quoted + " WHERE " + through_quoted + "." + source_fk_quoted + " = " + ph0
+
+        params: list[Value] = [source_pk_val]
+        rows: list[Row] = self.session.query_raw(sql, params)
+        return target_model.decode_rows(rows)
+
+    def load_relation_many_to_many[T](self: RelationLoader, rel: Relation, target_model: Model[T], source_pk_val: Value) -> list[T]:
+
+        if rel.rel_type != REL_MANY_TO_MANY:
+            raise RelationError("relation '" + rel.name + "' is not a many_to_many relation")
+        return self.load_many_to_many[T](target_model, rel.through_table, rel.foreign_key, rel.target_foreign_key, source_pk_val, rel.primary_key)

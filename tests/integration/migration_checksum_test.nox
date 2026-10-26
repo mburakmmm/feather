@@ -1,0 +1,56 @@
+# tests/integration/migration_checksum_test.nox — Integration tests for migration checksum verification.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Migration, MigrationManager, migration, compute_migration_checksum
+import errors
+from errors import MigrationError
+import nox.db
+from nox.db import Row
+
+# 1. Deterministic checksum computation
+m1: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"], ["DROP TABLE users"])
+sum1: str = m1.get_checksum()
+nox.test.assert_eq_int(len(sum1), 8, "Checksum is 8 hex characters")
+nox.test.assert_eq_str(sum1, m1.get_checksum(), "Checksum is deterministic across repeated calls")
+
+# Same content produces identical checksum
+m1_copy: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"], ["DROP TABLE users"])
+nox.test.assert_eq_str(sum1, m1_copy.get_checksum(), "Identical migrations produce identical checksums")
+
+# Modifying SQL produces different checksum
+m1_tampered: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"], ["DROP TABLE users"])
+nox.test.assert_true(sum1 != m1_tampered.get_checksum(), "Modified SQL alters checksum")
+
+# 2. Migration execution records checksum in _feather_migrations
+s: Session = open_sqlite_memory()
+mgr: MigrationManager = MigrationManager(s, [m1])
+applied_count: int = mgr.migrate_up()
+nox.test.assert_eq_int(applied_count, 1, "Migration 1 applied")
+
+# Inspect recorded checksum in database
+rows: list[Row] = s.query_raw("SELECT checksum FROM _feather_migrations WHERE version = 1", [])
+nox.test.assert_eq_int(len(rows), 1, "Record exists in _feather_migrations")
+db_checksum: str = rows[0].get_str(0)
+nox.test.assert_eq_str(db_checksum, sum1, "Recorded checksum matches computed migration checksum")
+
+# 3. Detect altered migration on subsequent migrate_up call
+# Scenario: Developer or attacker altered m1 after it was already executed in DB
+m2: Migration = migration(2, "create_roles", ["CREATE TABLE roles (id INTEGER PRIMARY KEY)"], ["DROP TABLE roles"])
+mgr_tampered: MigrationManager = MigrationManager(s, [m1_tampered, m2])
+
+mismatch_caught: bool = False
+try:
+    mgr_tampered.migrate_up()
+except MigrationError as e:
+    mismatch_caught = True
+    nox.test.assert_true(nox.strings.contains(e.message, "checksum mismatch"), "Error message mentions checksum mismatch")
+    nox.test.assert_true(nox.strings.contains(e.message, "version 1"), "Error message identifies mismatched version")
+
+nox.test.assert_true(mismatch_caught, "MigrationManager caught tampered migration and aborted")
+
+# Ensure migration 2 was NOT applied due to checksum failure
+nox.test.assert_true(not mgr.is_applied(2), "Migration 2 was not applied because previous migration failed validation")
+
+s.close()
+print("migration_checksum_test passed")

@@ -150,6 +150,92 @@ class Session:
 
         return affected
 
+    def insert_many(self, tbl: Table, rows: list[dict[str, Value]]) -> int:
+        self._ensure_open()
+        if len(rows) == 0:
+            return 0
+
+        col_names: list[str] = []
+        i: int = 0
+        while i < len(tbl.columns):
+            c: Column = tbl.columns[i]
+            if rows[0].contains(c.name):
+                col_names.append(c.name)
+            i = i + 1
+
+        if len(col_names) == 0:
+            raise QueryBuildError("insert_many requires at least one column value")
+
+        q_col_names: list[str] = []
+        c_idx: int = 0
+        while c_idx < len(col_names):
+            q_col_names.append(self.dialect.quote_identifier(col_names[c_idx]))
+            c_idx = c_idx + 1
+
+        row_placeholders: list[str] = []
+        bound_vals: list[Value] = []
+
+        r_idx: int = 0
+        while r_idx < len(rows):
+            row_dict: dict[str, Value] = rows[r_idx]
+            single_row_phs: list[str] = []
+            k: int = 0
+            while k < len(col_names):
+                c_name: str = col_names[k]
+                if not row_dict.contains(c_name):
+                    bound_vals.append(val_null())
+                else:
+                    bound_vals.append(row_dict[c_name])
+                single_row_phs.append(self.dialect.placeholder(len(bound_vals) - 1))
+                k = k + 1
+            row_placeholders.append("(" + nox.strings.join(single_row_phs, ", ") + ")")
+            r_idx = r_idx + 1
+
+        q_table: str = self.dialect.quote_identifier(tbl.name)
+        sql: str = "INSERT INTO " + q_table + " (" + nox.strings.join(q_col_names, ", ") + ") VALUES " + nox.strings.join(row_placeholders, ", ")
+
+        return self.execute_raw(sql, bound_vals)
+
+    def upsert(self, tbl: Table, values: dict[str, Value], conflict_target: list[str], update_values: dict[str, Value]) -> int:
+
+        self._ensure_open()
+        insert_cols: list[str] = []
+        all_params: list[Value] = []
+
+        i: int = 0
+        while i < len(tbl.columns):
+            col: Column = tbl.columns[i]
+            if values.contains(col.name):
+                insert_cols.append(col.name)
+                all_params.append(values[col.name])
+            i = i + 1
+
+        if len(insert_cols) == 0:
+            raise QueryBuildError("upsert requires at least one insert column value")
+
+        if (self.dialect.kind == DIALECT_SQLITE or self.dialect.kind == DIALECT_POSTGRES) and len(conflict_target) == 0:
+            raise QueryBuildError("conflict_target must not be empty for SQLite / PostgreSQL upsert")
+
+        c_idx: int = 0
+        while c_idx < len(conflict_target):
+            c_name: str = conflict_target[c_idx]
+            assert_valid_identifier(c_name, "conflict target")
+            if not tbl.has_column(c_name):
+                raise QueryBuildError("conflict target column '" + c_name + "' not found in table " + tbl.name)
+            c_idx = c_idx + 1
+
+        update_cols: list[str] = []
+        j: int = 0
+        while j < len(tbl.columns):
+            col2: Column = tbl.columns[j]
+            if update_values.contains(col2.name):
+                update_cols.append(col2.name)
+                all_params.append(update_values[col2.name])
+            j = j + 1
+
+        sql: str = self.dialect.upsert_sql(tbl, insert_cols, conflict_target, update_cols)
+        return self.execute_raw(sql, all_params)
+
     def update(self, tbl: Table, values_dict: dict[str, Value], where_clause: WhereClause) -> int:
 
         self._ensure_open()
@@ -233,6 +319,20 @@ class Session:
         wc.add(eq(tbl.primary_key, id_val), 1)
         return self.update(tbl, values_dict, wc)
 
+    def update_by_pk(self, tbl: Table, pk_values: dict[str, Value], values_dict: dict[str, Value]) -> int:
+
+        if len(tbl.primary_keys) == 0:
+            raise QueryBuildError("table " + tbl.name + " has no primary key defined")
+        wc: WhereClause = WhereClause()
+        i: int = 0
+        while i < len(tbl.primary_keys):
+            pk_name: str = tbl.primary_keys[i]
+            if pk_name not in pk_values:
+                raise QueryBuildError("missing primary key column '" + pk_name + "' in pk_values for table " + tbl.name)
+            wc.add(eq(pk_name, pk_values[pk_name]), 1)
+            i = i + 1
+        return self.update(tbl, values_dict, wc)
+
     def delete(self, tbl: Table, where_clause: WhereClause) -> int:
 
         self._ensure_open()
@@ -299,6 +399,20 @@ class Session:
             raise QueryBuildError("table " + tbl.name + " has no primary key defined")
         wc: WhereClause = WhereClause()
         wc.add(eq(tbl.primary_key, id_val), 1)
+        return self.delete(tbl, wc)
+
+    def delete_by_pk(self, tbl: Table, pk_values: dict[str, Value]) -> int:
+
+        if len(tbl.primary_keys) == 0:
+            raise QueryBuildError("table " + tbl.name + " has no primary key defined")
+        wc: WhereClause = WhereClause()
+        i: int = 0
+        while i < len(tbl.primary_keys):
+            pk_name: str = tbl.primary_keys[i]
+            if pk_name not in pk_values:
+                raise QueryBuildError("missing primary key column '" + pk_name + "' in pk_values for table " + tbl.name)
+            wc.add(eq(pk_name, pk_values[pk_name]), 1)
+            i = i + 1
         return self.delete(tbl, wc)
 
     def count(self, tbl: Table) -> int:
@@ -380,6 +494,24 @@ class Session:
             raise QueryBuildError("table " + model.table.name + " has no primary key defined")
         q: SelectQuery = select_all(model.table.name)
         q.where(eq(model.table.primary_key, id_val))
+        q.limit(1)
+        res: list[T] = self.execute_query[T](model, q)
+        if len(res) > 0:
+            return res[0]
+        return None
+
+    def find_by_pk[T](self, model: Model[T], pk_values: dict[str, Value]) -> T | None:
+
+        if len(model.table.primary_keys) == 0:
+            raise QueryBuildError("table " + model.table.name + " has no primary key defined")
+        q: SelectQuery = select_all(model.table.name)
+        i: int = 0
+        while i < len(model.table.primary_keys):
+            pk_name: str = model.table.primary_keys[i]
+            if pk_name not in pk_values:
+                raise QueryBuildError("missing primary key column '" + pk_name + "' in pk_values for table " + model.table.name)
+            q.where(eq(pk_name, pk_values[pk_name]))
+            i = i + 1
         q.limit(1)
         res: list[T] = self.execute_query[T](model, q)
         if len(res) > 0:

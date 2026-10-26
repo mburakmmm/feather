@@ -5,6 +5,40 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-27
+
+### Added
+- **Lossless Type Codecs (`types.nox`, `value.nox`, `mapper.nox`):**
+  - `Decimal` / `Money`: Fixed-point and arbitrary precision monetary value codec backed by string representation to prevent float rounding errors.
+  - `DateTime`: ISO-8601 UTC parser and formatter (`parse_iso_datetime`) with year, month, day, hour, minute, second components.
+  - `UUID`: RFC-4122 compliant 36-character canonical hex validator and formatter (`uuid_parse`, `is_valid_uuid`).
+  - Added value constructors: `val_decimal`, `val_datetime`, `val_uuid`.
+  - Added row mapper decoders: `row_get_decimal`, `row_get_opt_decimal`, `row_get_datetime`, `row_get_opt_datetime`, `row_get_uuid`, `row_get_opt_uuid`.
+- **Batch Insertion (`session.nox`, `dialects.nox`):**
+  - `session.insert_many(tbl: Table, rows: list[dict[str, Value]]) -> int`: Single-query multi-row `VALUES (?, ?), (?, ?)...` generator.
+  - Dialect-aware parameter index compilation (`?` for SQLite/MySQL, dynamic `$1..$N` for PostgreSQL).
+  - Empty-list safeguard returning 0 immediately without executing database queries.
+- **SQL Aggregates, GROUP BY & HAVING AST (`query.nox`):**
+  - Aggregate functions: `count_all()`, `count_col(col)`, `sum_col(col)`, `avg_col(col)`, `min_col(col)`, `max_col(col)`.
+  - `SelectQuery.group_by(cols: list[str])` for grouping results with identifier validation.
+  - `SelectQuery.having(pred: Predicate)` with parameterized predicate conditions (`HAVING count > ?`).
+- **Composite Primary Key Support (`metadata.nox`, `session.nox`, `dialects.nox`):**
+  - Multi-column primary key definitions in `Table` via `primary_keys: list[str]`.
+  - Dialect DDL generation with table-level `PRIMARY KEY ("col1", "col2")` constraint and `NOT NULL` column definitions.
+  - Composite CRUD helpers: `update_by_pk(tbl, pk_values, values)`, `delete_by_pk(tbl, pk_values)`, and `find_by_pk(model, pk_values)`.
+- **Migration Checksum & Tamper Protection (`migrations.nox`):**
+  - Deterministic 8-hex-digit checksum computation for all migration SQL statements (`compute_migration_checksum`).
+  - Tracking table `_feather_migrations` stores recorded `checksum TEXT NOT NULL`.
+  - Verification on `migrate_up` aborts with `MigrationError` if an already applied migration was altered in code.
+- **Many-to-Many Relationships (`relations.nox`):**
+  - `many_to_many(name, source_table, target_table, through_table, source_fk, target_fk, target_pk)` relation definition.
+  - `RelationLoader.load_many_to_many` and `RelationLoader.load_relation_many_to_many` eager loading via inner join query through pivot table.
+- **Upsert Operations (`session.nox`, `dialects.nox`):**
+  - `session.upsert(tbl, values, conflict_target, update_values) -> int`.
+  - Multi-dialect syntax: `ON CONFLICT (...) DO UPDATE SET ...` or `DO NOTHING` on SQLite and PostgreSQL, and `ON DUPLICATE KEY UPDATE ...` on MySQL.
+- **CLI Migration & Verification Tool (`main.nox`):**
+  - Subcommands: `feather demo`, `feather migrate status [db]`, `feather migrate up [db]`, `feather migrate down [ver] [db]`.
+
 ## [0.1.0] - 2026-10-27
 
 ### Added

@@ -1,0 +1,35 @@
+# tests/unit/aggregate_query_test.nox — Unit tests for GROUP BY, HAVING, and aggregate queries.
+
+import nox.test
+import query
+from query import SelectQuery, CompiledQuery, select, count_all, sum_col, avg_col, gt, val_int, val_float
+import dialects
+from dialects import sqlite_dialect, postgres_dialect, Dialect
+
+d_lite: Dialect = sqlite_dialect()
+d_pg: Dialect = postgres_dialect()
+
+# 1. Select with Aggregates
+q1: SelectQuery = select("sales", ["department", count_all(), sum_col("revenue")])
+c1: CompiledQuery = q1.compile(d_lite)
+nox.test.assert_eq_str(c1.sql, "SELECT \"department\", COUNT(*), SUM(\"revenue\") FROM \"sales\"", "Aggregates compiled correctly")
+
+# 2. Group By
+q2: SelectQuery = select("sales", ["department", sum_col("revenue")]).group_by(["department"])
+c2: CompiledQuery = q2.compile(d_lite)
+nox.test.assert_eq_str(c2.sql, "SELECT \"department\", SUM(\"revenue\") FROM \"sales\" GROUP BY \"department\"", "GROUP BY compiled correctly")
+
+# 3. Group By with Having
+q3: SelectQuery = select("sales", ["department", sum_col("revenue")])
+q3.group_by(["department"])
+q3.having(gt("revenue", val_int(10000)))
+
+c3: CompiledQuery = q3.compile(d_lite)
+nox.test.assert_eq_str(c3.sql, "SELECT \"department\", SUM(\"revenue\") FROM \"sales\" GROUP BY \"department\" HAVING \"revenue\" > ?", "HAVING clause compiled with placeholder")
+nox.test.assert_eq_int(len(c3.params), 1, "Having parameter bound")
+
+# PostgreSQL placeholder compilation
+c3_pg: CompiledQuery = q3.compile(d_pg)
+nox.test.assert_eq_str(c3_pg.sql, "SELECT \"department\", SUM(\"revenue\") FROM \"sales\" GROUP BY \"department\" HAVING \"revenue\" > $1", "PostgreSQL HAVING clause with $1")
+
+print("aggregate_query_test passed")

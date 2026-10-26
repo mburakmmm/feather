@@ -3,8 +3,11 @@
 import errors
 from errors import FeatherError, ConnectionError, QueryBuildError, IdentifierError, BindingError, MappingError, ConstraintError, TransactionError, DialectError, PoolError, MigrationError, RelationError, sanitize_error_message
 
+import types
+from types import Decimal, DateTime, UUID, decimal, datetime, parse_iso_datetime, uuid_parse, is_valid_uuid
+
 import value
-from value import Value, val_int, val_str, val_float, val_bool, val_null, bind_value, format_bound_values, VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_NULL
+from value import Value, val_int, val_str, val_float, val_bool, val_null, val_decimal, val_datetime, val_uuid, bind_value, format_bound_values, VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_NULL
 
 import metadata
 from metadata import Column, Table, col_int, col_str, col_float, col_bool, table, validate_identifier, TYPE_INTEGER, TYPE_TEXT, TYPE_REAL, TYPE_BOOLEAN
@@ -13,10 +16,10 @@ import dialects
 from dialects import Dialect, sqlite_dialect, postgres_dialect, mysql_dialect, get_dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
 
 import query
-from query import SelectQuery, WhereClause, Predicate, CompiledQuery, JoinClause, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, select, select_all, OP_EQ, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, LOGIC_AND, LOGIC_OR, ORDER_ASC, ORDER_DESC, JOIN_INNER, JOIN_LEFT
+from query import SelectQuery, WhereClause, Predicate, CompiledQuery, JoinClause, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, select, select_all, count_all, count_col, sum_col, avg_col, min_col, max_col, OP_EQ, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, LOGIC_AND, LOGIC_OR, ORDER_ASC, ORDER_DESC, JOIN_INNER, JOIN_LEFT
 
 import mapper
-from mapper import Model, row_get_int, row_get_str, row_get_float, row_get_bool, row_is_null, row_get_opt_int, row_get_opt_str, row_get_opt_float, row_get_opt_bool, row_get_int_by_name, row_get_str_by_name, row_get_float_by_name, row_get_bool_by_name, find_column_index
+from mapper import Model, row_get_int, row_get_str, row_get_float, row_get_bool, row_is_null, row_get_opt_int, row_get_opt_str, row_get_opt_float, row_get_opt_bool, row_get_decimal, row_get_opt_decimal, row_get_datetime, row_get_opt_datetime, row_get_uuid, row_get_opt_uuid, row_get_int_by_name, row_get_str_by_name, row_get_float_by_name, row_get_bool_by_name, find_column_index
 
 import session
 from session import Session, FeatherConn, wrap_db_connection, create_session
@@ -28,10 +31,10 @@ import pool
 from pool import ConnectionPool, PoolConfig, create_pool, create_sqlite_pool
 
 import migrations
-from migrations import Migration, MigrationManager, migration
+from migrations import Migration, MigrationManager, migration, compute_migration_checksum
 
 import relations
-from relations import Relation, RelationLoader, has_one, has_many, belongs_to, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO
+from relations import Relation, RelationLoader, has_one, has_many, belongs_to, many_to_many, REL_HAS_ONE, REL_HAS_MANY, REL_BELONGS_TO, REL_MANY_TO_MANY
 
 import nox.sqlite
 
