@@ -4,7 +4,7 @@
 
 [![Nox Version](https://img.shields.io/badge/noxc-2.0.27-blue.svg)](https://noxlang.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-19%2F19%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-22%2F22%20passed-brightgreen.svg)]()
 
 Feather makes everyday database work in the [Nox programming language](https://github.com/mburakmmm/nox-lang) intuitive, predictable, and safe. Think **Peewee / SQLModel in spirit**: explicit typed model mapping, parameterized CRUD, query construction, transaction management, connection pooling, and schema migrations — built directly on Nox's standard library with zero external dependencies.
 
@@ -12,21 +12,21 @@ Feather makes everyday database work in the [Nox programming language](https://g
 
 ## Features
 
-- 🛡️ **SQL-First & Safe by Construction:** All values are bound via prepared statement parameters. SQL injection is prevented by design.
+- 🛡️ **SQL-First & Safe by Construction:** All values are bound via prepared statement parameters. SQL injection is prevented by design, with strict identifier verification on tables, columns, and aggregates.
 - 🎯 **Explicit Static Typing:** Zero runtime metaclasses or dynamic class mutation. Pure typed row decoders and encoders.
 - 🔢 **Lossless Type Codecs:** String-backed `Decimal` for precision financial math, ISO-8601 UTC `DateTime`, and RFC-4122 `UUID` validation.
-- 🔍 **Fluent Query Builder:** Construct complex `SELECT`, `WHERE` (`=`, `!=`, `>`, `<`, `LIKE`, `IN`, `IS NULL`), `ORDER BY`, `LIMIT`, `OFFSET`, `INNER JOIN`, `LEFT JOIN`, `GROUP BY`, and `HAVING` queries through a type-safe AST.
-- 📊 **SQL Aggregates:** `count_all()`, `sum_col()`, `avg_col()`, `min_col()`, `max_col()`.
-- ⚡ **Batch Insertion (`insert_many`):** Multi-row `VALUES (?, ?), (?, ?)...` generator with dialect-aware placeholder numbering.
+- 🔍 **Fluent Query Builder & Parenthesized Grouping:** Construct complex `SELECT`, `WHERE` (`=`, `!=`, `>`, `<`, `LIKE`, `IN`, `IS NULL`), `where_group` parentheses expressions (`(A OR B) AND C`), `ORDER BY`, `LIMIT`, `OFFSET`, `INNER JOIN`, `LEFT JOIN`, `GROUP BY`, and `HAVING` queries through a type-safe AST.
+- 📊 **SQL Aggregates:** `count_all()`, `sum_col()`, `avg_col()`, `min_col()`, `max_col()` with inner column identifier sanitization.
+- ⚡ **Batch Insertion (`insert_many`):** Multi-row `VALUES (?, ?), (?, ?)...` generator with schema uniformity verification, preventing accidental NULL insertions.
 - 🔀 **Upsert Operations:** `session.upsert` with `ON CONFLICT (...) DO UPDATE` / `DO NOTHING` (SQLite/PostgreSQL) and `ON DUPLICATE KEY UPDATE` (MySQL).
-- 🔑 **Composite Primary Keys:** Full multi-column PK support with table-level constraint DDL, `find_by_pk`, `update_by_pk`, and `delete_by_pk`.
-- 🔄 **Multi-Dialect Support:** Portable queries across **SQLite**, **PostgreSQL** (`$1..$N` placeholders, `RETURNING`), and **MySQL** (backtick identifier quoting, auto-increment).
+- 🔑 **Composite Primary Keys:** Full multi-column PK support with table-level constraint DDL, `find_by_pk`, `update_by_pk`, and `delete_by_pk` (with composite auto-increment safety).
+- 🔄 **Multi-Dialect Support:** Portable queries across **SQLite**, **PostgreSQL** (`$1..$N` placeholders, `RETURNING`), and **MySQL** (backtick identifier quoting, `INT AUTO_INCREMENT PRIMARY KEY` migration DDL).
 - 💼 **Transaction Unit of Work:** Explicit state-tracked transactions (`IDLE`, `ACTIVE`, `COMMITTED`, `ROLLED_BACK`, `FAILED`) with automatic rollback on error.
-- 🏊 **Connection Pooling:** Bounded connection pool (`ConnectionPool`) with connection recycling and bounded capacity.
-- 📦 **Schema Migrations with Checksum Verification:** Versioned migrations with deterministic 8-hex-digit checksum tamper protection (`_feather_migrations`) and CLI runner.
-- 🔗 **Relationship Loaders:** Explicit `has_one`, `has_many`, `belongs_to`, and `many_to_many` (through pivot tables) foreign key loaders without hidden N+1 queries.
+- 🏊 **Leased Connection Pooling:** Bounded connection pool (`ConnectionPool`) with monotonic lease tracking, double-release prevention, foreign pool protection, and capacity invariant enforcement (`total = active + idle <= max`).
+- 📦 **Schema Migrations with Cryptographic SHA-256 Verification:** Versioned migrations with standard `nox.crypto.sha256` tamper protection covering version, name, up, and down SQLs, plus dialect-aware DDL.
+- 🔗 **Relationship Loaders & Batched Eager Loading:** Explicit `has_one`, `has_many`, `belongs_to`, and `many_to_many` loaders with `load_has_many_batch` and `load_belongs_to_batch` eliminating N+1 queries.
 - 🖥️ **CLI Migration & Verification Tool:** Run `feather demo`, `feather migrate status`, `feather migrate up`, and `feather migrate down`.
-- ⚡ **Zero External Dependencies:** Built 100% on Nox standard library modules (`nox.db`, `nox.sqlite`, `nox.postgres`, `nox.mysql`, `nox.strings`, `nox.test`, `nox.os`).
+- ⚡ **Zero External Dependencies:** Built 100% on Nox standard library modules (`nox.db`, `nox.sqlite`, `nox.postgres`, `nox.mysql`, `nox.strings`, `nox.crypto`, `nox.test`, `nox.os`).
 
 ---
 

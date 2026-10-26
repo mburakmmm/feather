@@ -9,7 +9,7 @@ from value import Value, val_int, val_str, val_float, val_bool, val_null, bind_v
 import dialects
 from dialects import Dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
 import query
-from query import SelectQuery, WhereClause, Predicate, CompiledQuery, eq, select, select_all, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, LOGIC_OR
+from query import SelectQuery, WhereClause, Predicate, CompiledQuery, ParamCollector, eq, select, select_all, compile_where_clause, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, LOGIC_OR
 import mapper
 from mapper import Model
 import errors
@@ -64,17 +64,23 @@ class Session:
     dialect: Dialect
     owns_conn: bool
     is_closed: bool
+    pool_id: int
+    lease_id: int
+    is_released: bool
 
-    def __init__(self, conn: FeatherConn, dialect: Dialect, owns_conn: bool = True) -> None:
+    def __init__(self, conn: FeatherConn, dialect: Dialect, owns_conn: bool = True, pool_id: int = 0, lease_id: int = 0) -> None:
         self.conn = conn
         self.dialect = dialect
         self.owns_conn = owns_conn
         self.is_closed = False
+        self.pool_id = pool_id
+        self.lease_id = lease_id
+        self.is_released = False
 
     def _ensure_open(self) -> None:
 
-        if self.is_closed:
-            raise ConnectionError("cannot execute operation on a closed Session")
+        if self.is_closed or self.is_released:
+            raise ConnectionError("cannot execute operation on a closed or released Session")
 
     def create_table(self, tbl: Table) -> None:
 
@@ -178,14 +184,15 @@ class Session:
         r_idx: int = 0
         while r_idx < len(rows):
             row_dict: dict[str, Value] = rows[r_idx]
+            if len(row_dict) != len(col_names):
+                raise QueryBuildError("insert_many requires all rows to have the exact same column set: row " + str(r_idx) + " has " + str(len(row_dict)) + " columns, expected " + str(len(col_names)))
             single_row_phs: list[str] = []
             k: int = 0
             while k < len(col_names):
                 c_name: str = col_names[k]
                 if not row_dict.contains(c_name):
-                    bound_vals.append(val_null())
-                else:
-                    bound_vals.append(row_dict[c_name])
+                    raise QueryBuildError("insert_many requires all rows to have the exact same column set: row " + str(r_idx) + " is missing column '" + c_name + "'")
+                bound_vals.append(row_dict[c_name])
                 single_row_phs.append(self.dialect.placeholder(len(bound_vals) - 1))
                 k = k + 1
             row_placeholders.append("(" + nox.strings.join(single_row_phs, ", ") + ")")
@@ -243,73 +250,25 @@ class Session:
             raise QueryBuildError("unfiltered UPDATE prohibited: where_clause must not be empty on table " + tbl.name)
 
         set_parts: list[str] = []
-        params: list[Value] = []
+        collector: ParamCollector = ParamCollector()
 
         i: int = 0
         while i < len(tbl.columns):
             col: Column = tbl.columns[i]
             if values_dict.contains(col.name):
                 q_col: str = self.dialect.quote_identifier(col.name)
-                ph: str = self.dialect.placeholder(len(params))
+                ph: str = self.dialect.placeholder(collector.count())
                 set_parts.append(q_col + " = " + ph)
-                params.append(values_dict[col.name])
+                collector.add(values_dict[col.name])
             i = i + 1
 
         if len(set_parts) == 0:
             return 0
 
         q_table: str = self.dialect.quote_identifier(tbl.name)
-        sql: str = "UPDATE " + q_table + " SET " + nox.strings.join(set_parts, ", ") + " WHERE "
-
-        p_idx: int = 0
-        while p_idx < len(where_clause.predicates):
-            pred: Predicate = where_clause.predicates[p_idx]
-            log: int = where_clause.logics[p_idx]
-            if p_idx > 0:
-                if log == LOGIC_OR:
-                    sql = sql + " OR "
-                else:
-                    sql = sql + " AND "
-
-            q_c: str = self.dialect.quote_identifier(pred.col_name)
-
-            if pred.op == OP_IS_NULL:
-                sql = sql + q_c + " IS NULL"
-            elif pred.op == OP_IS_NOT_NULL:
-                sql = sql + q_c + " IS NOT NULL"
-            elif pred.op == OP_IN:
-                if len(pred.val_list) == 0:
-                    sql = sql + "1 = 0"
-                else:
-                    in_phs: list[str] = []
-                    k: int = 0
-                    while k < len(pred.val_list):
-                        in_phs.append(self.dialect.placeholder(len(params)))
-                        params.append(pred.val_list[k])
-                        k = k + 1
-                    sql = sql + q_c + " IN (" + nox.strings.join(in_phs, ", ") + ")"
-            else:
-                op_str: str = " = "
-                if pred.op == OP_NEQ:
-                    op_str = " != "
-                elif pred.op == OP_GT:
-                    op_str = " > "
-                elif pred.op == OP_GTE:
-                    op_str = " >= "
-                elif pred.op == OP_LT:
-                    op_str = " < "
-                elif pred.op == OP_LTE:
-                    op_str = " <= "
-                elif pred.op == OP_LIKE:
-                    op_str = " LIKE "
-
-                ph2: str = self.dialect.placeholder(len(params))
-                params.append(pred.val)
-                sql = sql + q_c + op_str + ph2
-
-            p_idx = p_idx + 1
-
-        return self.execute_raw(sql, params)
+        w_sql: str = compile_where_clause(where_clause, self.dialect, collector)
+        sql: str = "UPDATE " + q_table + " SET " + nox.strings.join(set_parts, ", ") + " WHERE " + w_sql
+        return self.execute_raw(sql, collector.params)
 
     def update_by_id(self, tbl: Table, id_val: Value, values_dict: dict[str, Value]) -> int:
 
@@ -339,59 +298,11 @@ class Session:
         if where_clause.is_empty():
             raise QueryBuildError("unfiltered DELETE prohibited: where_clause must not be empty on table " + tbl.name)
 
-        params: list[Value] = []
+        collector: ParamCollector = ParamCollector()
         q_table: str = self.dialect.quote_identifier(tbl.name)
-        sql: str = "DELETE FROM " + q_table + " WHERE "
-
-        p_idx: int = 0
-        while p_idx < len(where_clause.predicates):
-            pred: Predicate = where_clause.predicates[p_idx]
-            log: int = where_clause.logics[p_idx]
-            if p_idx > 0:
-                if log == LOGIC_OR:
-                    sql = sql + " OR "
-                else:
-                    sql = sql + " AND "
-
-            q_c: str = self.dialect.quote_identifier(pred.col_name)
-
-            if pred.op == OP_IS_NULL:
-                sql = sql + q_c + " IS NULL"
-            elif pred.op == OP_IS_NOT_NULL:
-                sql = sql + q_c + " IS NOT NULL"
-            elif pred.op == OP_IN:
-                if len(pred.val_list) == 0:
-                    sql = sql + "1 = 0"
-                else:
-                    in_phs: list[str] = []
-                    k: int = 0
-                    while k < len(pred.val_list):
-                        in_phs.append(self.dialect.placeholder(len(params)))
-                        params.append(pred.val_list[k])
-                        k = k + 1
-                    sql = sql + q_c + " IN (" + nox.strings.join(in_phs, ", ") + ")"
-            else:
-                op_str: str = " = "
-                if pred.op == OP_NEQ:
-                    op_str = " != "
-                elif pred.op == OP_GT:
-                    op_str = " > "
-                elif pred.op == OP_GTE:
-                    op_str = " >= "
-                elif pred.op == OP_LT:
-                    op_str = " < "
-                elif pred.op == OP_LTE:
-                    op_str = " <= "
-                elif pred.op == OP_LIKE:
-                    op_str = " LIKE "
-
-                ph2: str = self.dialect.placeholder(len(params))
-                params.append(pred.val)
-                sql = sql + q_c + op_str + ph2
-
-            p_idx = p_idx + 1
-
-        return self.execute_raw(sql, params)
+        w_sql: str = compile_where_clause(where_clause, self.dialect, collector)
+        sql: str = "DELETE FROM " + q_table + " WHERE " + w_sql
+        return self.execute_raw(sql, collector.params)
 
     def delete_by_id(self, tbl: Table, id_val: Value) -> int:
 
@@ -431,47 +342,12 @@ class Session:
         self._ensure_open()
         q_table: str = self.dialect.quote_identifier(tbl.name)
         sql: str = "SELECT COUNT(*) FROM " + q_table
-        params: list[Value] = []
+        collector: ParamCollector = ParamCollector()
 
         if not where_clause.is_empty():
-            sql = sql + " WHERE "
-            p_idx: int = 0
-            while p_idx < len(where_clause.predicates):
-                pred: Predicate = where_clause.predicates[p_idx]
-                log: int = where_clause.logics[p_idx]
-                if p_idx > 0:
-                    if log == LOGIC_OR:
-                        sql = sql + " OR "
-                    else:
-                        sql = sql + " AND "
+            sql = sql + " WHERE " + compile_where_clause(where_clause, self.dialect, collector)
 
-                q_c: str = self.dialect.quote_identifier(pred.col_name)
-                if pred.op == OP_IS_NULL:
-                    sql = sql + q_c + " IS NULL"
-                elif pred.op == OP_IS_NOT_NULL:
-                    sql = sql + q_c + " IS NOT NULL"
-                else:
-                    op_str: str = " = "
-                    if pred.op == OP_NEQ:
-                        op_str = " != "
-                    elif pred.op == OP_GT:
-                        op_str = " > "
-                    elif pred.op == OP_GTE:
-                        op_str = " >= "
-                    elif pred.op == OP_LT:
-                        op_str = " < "
-                    elif pred.op == OP_LTE:
-                        op_str = " <= "
-                    elif pred.op == OP_LIKE:
-                        op_str = " LIKE "
-
-                    ph: str = self.dialect.placeholder(len(params))
-                    params.append(pred.val)
-                    sql = sql + q_c + op_str + ph
-
-                p_idx = p_idx + 1
-
-        rows: list[Row] = self.query_raw(sql, params)
+        rows: list[Row] = self.query_raw(sql, collector.params)
         if len(rows) > 0:
             return rows[0].get_int(0)
         return 0

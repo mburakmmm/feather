@@ -7,7 +7,7 @@ from mapper import Model
 import value
 from value import Value
 import query
-from query import SelectQuery, eq, select_all
+from query import SelectQuery, eq, is_in, select_all
 import errors
 from errors import RelationError
 import metadata
@@ -74,6 +74,19 @@ class RelationLoader:
         q.where(eq(fk_column, parent_pk_val))
         return self.session.execute_query[C](child_model, q)
 
+    def load_has_many_batch[C](self: RelationLoader, child_model: Model[C], fk_column: str, parent_pk_vals: list[Value]) -> list[C]:
+        if len(parent_pk_vals) == 0:
+            empty: list[C] = []
+            return empty
+        q: SelectQuery = select_all(child_model.table.name)
+        q.where(is_in(fk_column, parent_pk_vals))
+        return self.session.execute_query[C](child_model, q)
+
+    def load_relation_has_many_batch[C](self: RelationLoader, rel: Relation, child_model: Model[C], parent_pk_vals: list[Value]) -> list[C]:
+        if rel.rel_type != REL_HAS_MANY:
+            raise RelationError("relation '" + rel.name + "' is not a has_many relation")
+        return self.load_has_many_batch[C](child_model, rel.foreign_key, parent_pk_vals)
+
     def load_belongs_to[P](self: RelationLoader, parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None:
 
         q: SelectQuery = select_all(parent_model.table.name)
@@ -83,6 +96,19 @@ class RelationLoader:
         if len(rows) > 0:
             return rows[0]
         return None
+
+    def load_belongs_to_batch[P](self: RelationLoader, parent_model: Model[P], pk_column: str, fk_vals: list[Value]) -> list[P]:
+        if len(fk_vals) == 0:
+            empty: list[P] = []
+            return empty
+        q: SelectQuery = select_all(parent_model.table.name)
+        q.where(is_in(pk_column, fk_vals))
+        return self.session.execute_query[P](parent_model, q)
+
+    def load_relation_belongs_to_batch[P](self: RelationLoader, rel: Relation, parent_model: Model[P], fk_vals: list[Value]) -> list[P]:
+        if rel.rel_type != REL_BELONGS_TO:
+            raise RelationError("relation '" + rel.name + "' is not a belongs_to relation")
+        return self.load_belongs_to_batch[P](parent_model, rel.primary_key, fk_vals)
 
     def load_has_one[C](self: RelationLoader, child_model: Model[C], fk_column: str, parent_pk_val: Value) -> C | None:
 

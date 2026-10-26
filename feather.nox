@@ -16,7 +16,7 @@ import dialects
 from dialects import Dialect, sqlite_dialect, postgres_dialect, mysql_dialect, get_dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
 
 import query
-from query import SelectQuery, WhereClause, Predicate, CompiledQuery, JoinClause, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, select, select_all, count_all, count_col, sum_col, avg_col, min_col, max_col, OP_EQ, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, LOGIC_AND, LOGIC_OR, ORDER_ASC, ORDER_DESC, JOIN_INNER, JOIN_LEFT
+from query import SelectQuery, WhereClause, Predicate, CompiledQuery, JoinClause, eq, neq, gt, gte, lt, lte, like, is_null, is_not_null, is_in, select, select_all, count_all, count_col, sum_col, avg_col, min_col, max_col, compile_where_clause, OP_EQ, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, LOGIC_AND, LOGIC_OR, ORDER_ASC, ORDER_DESC, JOIN_INNER, JOIN_LEFT
 
 import mapper
 from mapper import Model, row_get_int, row_get_str, row_get_float, row_get_bool, row_is_null, row_get_opt_int, row_get_opt_str, row_get_opt_float, row_get_opt_bool, row_get_decimal, row_get_opt_decimal, row_get_datetime, row_get_opt_datetime, row_get_uuid, row_get_opt_uuid, row_get_int_by_name, row_get_str_by_name, row_get_float_by_name, row_get_bool_by_name, find_column_index

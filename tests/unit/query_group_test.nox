@@ -1,0 +1,100 @@
+# tests/unit/query_group_test.nox — Unit and integration tests for WhereClause parentheses grouping and aggregate security.
+
+import nox.test
+import feather
+from feather import Session, open_sqlite_memory, Table, Column, col_int, col_str, col_bool, table
+from feather import SelectQuery, WhereClause, select_all, select, eq, val_str, val_bool, val_int, Value, CompiledQuery
+from feather import LOGIC_AND, LOGIC_OR, sqlite_dialect
+import mapper
+from mapper import Model, row_get_int, row_get_str, row_get_bool
+import errors
+from errors import IdentifierError, QueryBuildError
+import nox.db
+from nox.db import Row
+
+# 1. AST Grouping & Precedence SQL Compilation Test
+q: SelectQuery = select_all("users")
+
+# Construct (role = 'admin' OR role = 'moderator')
+grp: WhereClause = WhereClause()
+grp.add(eq("role", val_str("admin")), LOGIC_AND)
+grp.add(eq("role", val_str("moderator")), LOGIC_OR)
+
+# Add group and then AND is_active = true
+q.where_group(grp)
+q.and_where(eq("is_active", val_bool(True)))
+
+compiled: CompiledQuery = q.compile(sqlite_dialect())
+nox.test.assert_eq_str(
+    compiled.sql,
+    "SELECT * FROM \"users\" WHERE (\"role\" = ? OR \"role\" = ?) AND \"is_active\" = ?",
+    "Grouped where clause properly encloses conditions in parentheses"
+)
+nox.test.assert_eq_int(len(compiled.params), 3, "3 bound parameters in grouped query")
+
+# 2. Database Precedence Verification in SQLite
+class UserRec:
+    id: int
+    role: str
+    is_active: bool
+
+    def __init__(self: UserRec, id: int, role: str, is_active: bool) -> None:
+        self.id = id
+        self.role = role
+        self.is_active = is_active
+
+def decode_u(r: Row) -> UserRec:
+    return UserRec(row_get_int(r, 0), row_get_str(r, 1), row_get_bool(r, 2))
+
+def encode_u(u: UserRec) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(u.id)
+    d["role"] = val_str(u.role)
+    d["is_active"] = val_bool(u.is_active)
+    return d
+
+user_tbl: Table = table("users", [col_int("id", True), col_str("role"), col_bool("is_active")])
+user_m: Model[UserRec] = Model[UserRec](user_tbl, decode_u, encode_u)
+
+s: Session = open_sqlite_memory()
+s.create_table(user_tbl)
+
+# Seed 4 users:
+# User 1: admin, inactive (False)
+# User 2: moderator, active (True)
+# User 3: member, active (True)
+# User 4: guest, inactive (False)
+s.insert(user_tbl, {"id": val_int(1), "role": val_str("admin"), "is_active": val_bool(False)})
+s.insert(user_tbl, {"id": val_int(2), "role": val_str("moderator"), "is_active": val_bool(True)})
+s.insert(user_tbl, {"id": val_int(3), "role": val_str("member"), "is_active": val_bool(True)})
+s.insert(user_tbl, {"id": val_int(4), "role": val_str("guest"), "is_active": val_bool(False)})
+
+# Query with grouping: (role = admin OR role = moderator) AND is_active = true
+# Must ONLY match User 2! (User 1 is inactive, User 3 is member)
+res: list[UserRec] = s.execute_query[UserRec](user_m, q)
+nox.test.assert_eq_int(len(res), 1, "Only 1 user matches (admin OR moderator) AND active")
+nox.test.assert_eq_str(res[0].role, "moderator", "Matched user is the active moderator")
+
+# 3. Aggregate Inner Identifier Validation Security Test
+bad_agg_caught: bool = False
+try:
+    bad_q: SelectQuery = select("users", ["SUM(salary; DROP TABLE users)"])
+except IdentifierError as e:
+    bad_agg_caught = True
+nox.test.assert_true(bad_agg_caught, "Malicious aggregate inner identifier is rejected with IdentifierError")
+
+# 4. Composite PK with Auto-increment is rejected
+composite_auto_caught: bool = False
+try:
+    bad_tbl: Table = table("bad_composite", [
+        col_int("id1", True, False, True),  # auto_increment = True
+        col_int("id2", True)
+    ])
+except QueryBuildError as e2:
+    composite_auto_caught = True
+    nox.test.assert_true(nox.strings.contains(e2.message, "auto-increment is not supported on composite"), "Error mentions composite auto-increment restriction")
+
+nox.test.assert_true(composite_auto_caught, "Composite PK with auto_increment is rejected at table definition")
+
+s.close()
+print("query_group_test passed")

@@ -2,7 +2,7 @@
 
 import nox.test
 import feather
-from feather import Session, Table, Column, Value, val_int, val_str, val_bool, col_int, col_str, col_bool, table, open_sqlite_memory, row_get_int, row_get_str
+from feather import Session, Table, Column, Value, val_int, val_str, val_bool, col_int, col_str, col_bool, table, open_sqlite_memory, row_get_int, row_get_str, QueryBuildError
 import mapper
 from mapper import Model
 import nox.db
@@ -60,6 +60,21 @@ nox.test.assert_eq_int(len(all_logs), 4, "Retrieved 4 logs")
 nox.test.assert_eq_str(all_logs[0].service, "auth", "First log service matches")
 nox.test.assert_eq_str(all_logs[1].service, "payment", "Second log service matches")
 nox.test.assert_eq_str(all_logs[3].service, "auth", "Fourth log service matches")
+
+# 4. Inconsistent column sets raise QueryBuildError (prevents silent NULL override)
+inconsistent_batch: list[dict[str, Value]] = [
+    {"service": val_str("api"), "message": val_str("ok")},
+    {"service": val_str("api")}  # missing message
+]
+
+inconsistent_failed: bool = False
+try:
+    s.insert_many(tbl, inconsistent_batch)
+except QueryBuildError as e:
+    inconsistent_failed = True
+    nox.test.assert_true(nox.strings.contains(e.message, "exact same column set"), "Error mentions exact same column set requirement")
+
+nox.test.assert_true(inconsistent_failed, "insert_many rejected inconsistent row column sets")
 
 s.close()
 print("insert_many_test passed")

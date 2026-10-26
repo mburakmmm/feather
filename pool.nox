@@ -8,6 +8,19 @@ import errors
 from errors import PoolError
 import nox.sqlite
 
+class _PoolIdGenerator:
+    current: int
+
+    def __init__(self: _PoolIdGenerator) -> None:
+        self.current = 1
+
+    def next(self: _PoolIdGenerator) -> int:
+        c: int = self.current
+        self.current = self.current + 1
+        return c
+
+_pool_id_gen: _PoolIdGenerator = _PoolIdGenerator()
+
 class PoolConfig:
     max_connections: int
     factory: () -> FeatherConn
@@ -23,21 +36,30 @@ class PoolConfig:
 class ConnectionPool:
     config: PoolConfig
     idle_conns: list[FeatherConn]
-    active_count: int
+    active_leases: dict[int, FeatherConn]
     is_closed: bool
+    pool_id: int
+    next_lease_id: int
 
-    def __init__(self: ConnectionPool, config: PoolConfig) -> None:
+    def __init__(self: ConnectionPool, config: PoolConfig, pool_id: int = 0) -> None:
         self.config = config
         self.idle_conns = []
-        self.active_count = 0
+        self.active_leases = {}
         self.is_closed = False
+        if pool_id <= 0:
+            self.pool_id = _pool_id_gen.next()
+        else:
+            self.pool_id = pool_id
+        self.next_lease_id = 1
 
     def acquire(self: ConnectionPool) -> Session:
 
         if self.is_closed:
             raise PoolError("cannot acquire connection from a closed pool")
 
+        total_conns: int = len(self.idle_conns) + len(self.active_leases)
         conn: FeatherConn | None = None
+
         if len(self.idle_conns) > 0:
             last_idx: int = len(self.idle_conns) - 1
             conn = self.idle_conns[last_idx]
@@ -47,11 +69,9 @@ class ConnectionPool:
                 new_idles.append(self.idle_conns[i])
                 i = i + 1
             self.idle_conns = new_idles
-            self.active_count = self.active_count + 1
-        elif self.active_count < self.config.max_connections:
+        elif total_conns < self.config.max_connections:
             f: () -> FeatherConn = self.config.factory
             conn = f()
-            self.active_count = self.active_count + 1
         else:
             raise PoolError("connection pool exhausted: active connections reached limit of " + str(self.config.max_connections))
 
@@ -59,20 +79,39 @@ class ConnectionPool:
             raise PoolError("failed to create or acquire connection")
 
         fc: FeatherConn = conn
+        lease_id: int = self.next_lease_id
+        self.next_lease_id = self.next_lease_id + 1
+        self.active_leases[lease_id] = fc
+
         # Session wraps the pooled connection without closing the underlying handle when session closes
-        return Session(fc, self.config.dialect, False)
+        return Session(fc, self.config.dialect, False, self.pool_id, lease_id)
 
     def release_connection(self: ConnectionPool, s: Session) -> None:
 
-        if self.active_count > 0:
-            self.active_count = self.active_count - 1
+        if s.pool_id != self.pool_id:
+            raise PoolError("cannot release session to a different connection pool (pool ID mismatch)")
+
+        if s.is_released or not self.active_leases.contains(s.lease_id):
+            raise PoolError("session has already been released (double release detected)")
+
+        # Invalidate the session so it can never be used again by the caller
+        s.is_released = True
+        s.is_closed = True
+
+        fc: FeatherConn = self.active_leases.pop(s.lease_id)
+
+        # Roll back any active transaction left open by the user
+        try:
+            fc.execute("ROLLBACK")
+        except Exception as e:
+            pass
 
         if self.is_closed:
-            s.conn.close()
+            fc.close()
             return
 
         idles: list[FeatherConn] = self.idle_conns
-        idles.append(s.conn)
+        idles.append(fc)
         self.idle_conns = idles
 
     def idle_count(self: ConnectionPool) -> int:
@@ -81,17 +120,29 @@ class ConnectionPool:
 
     def in_use_count(self: ConnectionPool) -> int:
 
-        return self.active_count
+        return len(self.active_leases)
+
+    def total_count(self: ConnectionPool) -> int:
+
+        return len(self.idle_conns) + len(self.active_leases)
 
     def close_all(self: ConnectionPool) -> None:
 
         self.is_closed = True
+        # Close all idle connections
         i: int = 0
         while i < len(self.idle_conns):
             self.idle_conns[i].close()
             i = i + 1
         self.idle_conns = []
-        self.active_count = 0
+
+        # Close all active leased connections
+        active_conns: list[FeatherConn] = self.active_leases.values()
+        j: int = 0
+        while j < len(active_conns):
+            active_conns[j].close()
+            j = j + 1
+        self.active_leases.clear()
 
 def create_pool(factory: () -> FeatherConn, dialect: Dialect, max_connections: int = 10) -> ConnectionPool:
     cfg: PoolConfig = PoolConfig(max_connections, factory, dialect)

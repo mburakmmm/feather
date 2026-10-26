@@ -54,4 +54,15 @@ nox.test.assert_true(d_pg.supports_returning(), "PostgreSQL supports RETURNING")
 nox.test.assert_true(not d_sqlite.supports_returning(), "SQLite does not rely on RETURNING")
 nox.test.assert_true(not d_my.supports_returning(), "MySQL does not rely on RETURNING")
 
+# 6. Migration Table DDL
+mig_lite: str = d_sqlite.migration_table_sql()
+nox.test.assert_true("\"id\" INTEGER PRIMARY KEY AUTOINCREMENT" in mig_lite, "SQLite migration table uses INTEGER PRIMARY KEY AUTOINCREMENT")
+
+mig_pg: str = d_pg.migration_table_sql()
+nox.test.assert_true("\"id\" SERIAL PRIMARY KEY" in mig_pg, "PostgreSQL migration table uses SERIAL PRIMARY KEY")
+
+mig_my: str = d_my.migration_table_sql()
+nox.test.assert_true("`id` INT AUTO_INCREMENT PRIMARY KEY" in mig_my, "MySQL migration table uses INT AUTO_INCREMENT PRIMARY KEY")
+nox.test.assert_true("`version` INT NOT NULL UNIQUE" in mig_my, "MySQL migration table uses INT for version")
+
 print("dialects_test passed")

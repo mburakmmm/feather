@@ -5,6 +5,38 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-27
+
+### Added
+- **Batched Relation Eager Loading (`relations.nox`):**
+  - `RelationLoader.load_has_many_batch[C](child_model, fk_col, parent_pks)` and `load_belongs_to_batch[P](parent_model, pk_col, fks)` querying multiple parent/foreign records in a single `IN (?, ?, ...)` query, completely eliminating N+1 query patterns.
+  - Added relation helper wrappers: `load_relation_has_many_batch[C]` and `load_relation_belongs_to_batch[P]`.
+  - Immediate empty-list return safeguard avoiding redundant database roundtrips.
+- **Parenthesized Condition Grouping & Expression AST (`query.nox`):**
+  - `SelectQuery.where_group(grp: WhereClause, logic: int = 1)` and `or_where_group(grp: WhereClause)` supporting arbitrary parentheses grouping such as `(role = 'admin' OR role = 'moderator') AND is_active = true`.
+  - `WhereClause.add_group(grp: WhereClause, logic: int = 1)` enabling nested clause structures.
+  - `ParamCollector` abstraction for safely collecting parameters across recursive where clause compilation while respecting compiler limitations.
+- **Dialect-Aware Migration Table DDL (`dialects.nox`, `migrations.nox`):**
+  - Added `Dialect.migration_table_sql()` ensuring valid DDL across all engines: `INT AUTO_INCREMENT PRIMARY KEY` on MySQL, `SERIAL PRIMARY KEY` on PostgreSQL, and `INTEGER PRIMARY KEY AUTOINCREMENT` on SQLite.
+
+### Changed & Hardened
+- **Connection Pool Lease Security & Invariant Maintenance (`pool.nox`, `session.nox`):**
+  - Unique `pool_id` identification and monotonic per-acquisition `lease_id` tracking.
+  - Double-release prevention: throws `PoolError` if a session is released more than once.
+  - Foreign-pool release prevention: throws `PoolError` if attempting to release a session into a different pool.
+  - Session invalidation on release: sets `is_released = True`, causing subsequent database operations on the released session to raise `ConnectionError`.
+  - Automatic rollback of uncommitted transactions upon release to prevent transaction leakage.
+  - Preserved pool capacity invariant: `total = len(idle_conns) + len(active_leases) <= max_connections`.
+- **Cryptographic SHA-256 Migration Checksums (`migrations.nox`):**
+  - Replaced non-cryptographic hash with standard `nox.crypto.sha256` yielding canonical 64-character hex digests.
+  - Checksum computation now encompasses migration version, name, all `up_sqls`, and all `down_sqls` for tamper protection.
+- **Strict `insert_many` Column Uniformity Validation (`session.nox`):**
+  - Validates that every row in batch insertion possesses the exact column set derived from the initial row; raises `QueryBuildError` on missing or extraneous keys, preventing silent SQL NULL insertion.
+- **Aggregate Column Identifier Validation (`query.nox`):**
+  - Validates inner column identifiers inside `COUNT(...)`, `SUM(...)`, `AVG(...)`, `MIN(...)`, and `MAX(...)` in `SelectQuery.__init__` and `compile`, rejecting SQL injection fragments with `IdentifierError`.
+- **Composite Primary Key Validation (`metadata.nox`):**
+  - Rejects `is_auto_increment=True` on tables with multi-column composite primary keys at definition time with `QueryBuildError`.
+
 ## [0.2.0] - 2026-10-27
 
 ### Added

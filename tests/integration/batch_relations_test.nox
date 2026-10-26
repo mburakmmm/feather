@@ -1,0 +1,106 @@
+# tests/integration/batch_relations_test.nox — Integration tests for batched relation eager loading (eliminating N+1).
+
+import nox.test
+import feather
+from feather import Session, Table, Column, Value, val_int, val_str, col_int, col_str, table, open_sqlite_memory, row_get_int, row_get_str
+from feather import Relation, RelationLoader, has_many, belongs_to
+import mapper
+from mapper import Model
+import nox.db
+from nox.db import Row
+
+class Author:
+    id: int
+    name: str
+
+    def __init__(self: Author, id: int, name: str) -> None:
+        self.id = id
+        self.name = name
+
+def decode_author(r: Row) -> Author:
+    return Author(row_get_int(r, 0), row_get_str(r, 1))
+
+def encode_author(a: Author) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(a.id)
+    d["name"] = val_str(a.name)
+    return d
+
+class Book:
+    id: int
+    title: str
+    author_id: int
+
+    def __init__(self: Book, id: int, title: str, author_id: int) -> None:
+        self.id = id
+        self.title = title
+        self.author_id = author_id
+
+def decode_book(r: Row) -> Book:
+    return Book(row_get_int(r, 0), row_get_str(r, 1), row_get_int(r, 2))
+
+def encode_book(b: Book) -> dict[str, Value]:
+    d: dict[str, Value] = {}
+    d["id"] = val_int(b.id)
+    d["title"] = val_str(b.title)
+    d["author_id"] = val_int(b.author_id)
+    return d
+
+s: Session = open_sqlite_memory()
+
+# 1. Setup tables
+tbl_authors: Table = table("authors", [col_int("id", True), col_str("name")])
+tbl_books: Table = table("books", [col_int("id", True), col_str("title"), col_int("author_id")])
+
+s.create_table(tbl_authors)
+s.create_table(tbl_books)
+
+model_author: Model[Author] = Model[Author](tbl_authors, decode_author, encode_author)
+model_book: Model[Book] = Model[Book](tbl_books, decode_book, encode_book)
+
+# 2. Insert test data
+# Author 1: Alice has 2 books (Book 1, Book 2)
+# Author 2: Bob has 1 book (Book 3)
+# Author 3: Charlie has 0 books
+s.insert(tbl_authors, {"id": val_int(1), "name": val_str("Alice")})
+s.insert(tbl_authors, {"id": val_int(2), "name": val_str("Bob")})
+s.insert(tbl_authors, {"id": val_int(3), "name": val_str("Charlie")})
+
+s.insert(tbl_books, {"id": val_int(1), "title": val_str("Alice in Wonderland"), "author_id": val_int(1)})
+s.insert(tbl_books, {"id": val_int(2), "title": val_str("Through the Looking-Glass"), "author_id": val_int(1)})
+s.insert(tbl_books, {"id": val_int(3), "title": val_str("Bob's Odyssey"), "author_id": val_int(2)})
+
+loader: RelationLoader = RelationLoader(s)
+rel_books: Relation = has_many("books", "authors", "books", "author_id", "id")
+rel_author: Relation = belongs_to("author", "books", "authors", "author_id", "id")
+
+# 3. Test load_has_many_batch for Author 1 and Author 2 in a SINGLE query
+parent_ids: list[Value] = [val_int(1), val_int(2)]
+batch_books: list[Book] = loader.load_has_many_batch[Book](model_book, "author_id", parent_ids)
+nox.test.assert_eq_int(len(batch_books), 3, "Batch loaded 3 books across 2 authors in one query")
+
+# 4. Test load_relation_has_many_batch helper
+batch_books_rel: list[Book] = loader.load_relation_has_many_batch[Book](rel_books, model_book, parent_ids)
+nox.test.assert_eq_int(len(batch_books_rel), 3, "Relation batch loaded 3 books")
+
+# 5. Test load_has_many_batch with empty list returns empty list
+empty_pks: list[Value] = []
+empty_books: list[Book] = loader.load_has_many_batch[Book](model_book, "author_id", empty_pks)
+nox.test.assert_eq_int(len(empty_books), 0, "Empty parent IDs returns empty list without error")
+
+# 6. Test load_belongs_to_batch for multiple FK values
+fk_vals: list[Value] = [val_int(1), val_int(2)]
+batch_authors: list[Author] = loader.load_belongs_to_batch[Author](model_author, "id", fk_vals)
+nox.test.assert_eq_int(len(batch_authors), 2, "Batch loaded 2 parent authors in one query")
+
+# 7. Test load_relation_belongs_to_batch helper
+batch_authors_rel: list[Author] = loader.load_relation_belongs_to_batch[Author](rel_author, model_author, fk_vals)
+nox.test.assert_eq_int(len(batch_authors_rel), 2, "Relation batch loaded 2 parent authors")
+
+# 8. Test load_belongs_to_batch with empty list returns empty list
+empty_fks: list[Value] = []
+empty_authors: list[Author] = loader.load_belongs_to_batch[Author](model_author, "id", empty_fks)
+nox.test.assert_eq_int(len(empty_authors), 0, "Empty FKs returns empty list without error")
+
+s.close()
+print("batch_relations_test passed")

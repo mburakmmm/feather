@@ -1,0 +1,77 @@
+# tests/integration/pool_lease_test.nox — Integration tests for connection pool lease safety and lifecycle invariants.
+
+import nox.test
+import feather
+from feather import ConnectionPool, PoolConfig, create_sqlite_pool, Session, Table, Column, col_int, col_str, table, val_int, val_str, begin_transaction, Transaction
+import errors
+from errors import PoolError, ConnectionError
+import nox.sqlite
+
+# 1. Setup table
+test_tbl: Table = table("items", [col_int("id", True), col_str("name")])
+
+# 2. Setup pool with max 2 connections
+cp: ConnectionPool = create_sqlite_pool(":memory:", 2)
+nox.test.assert_eq_int(cp.idle_count(), 0, "Initially 0 idle")
+nox.test.assert_eq_int(cp.in_use_count(), 0, "Initially 0 in use")
+nox.test.assert_eq_int(cp.total_count(), 0, "Initially 0 total")
+
+s1: Session = cp.acquire()
+s1.create_table(test_tbl)
+nox.test.assert_eq_int(cp.in_use_count(), 1, "1 session in use")
+nox.test.assert_eq_int(cp.total_count(), 1, "1 total connection")
+
+# 3. Double release protection
+cp.release_connection(s1)
+nox.test.assert_eq_int(cp.idle_count(), 1, "1 idle connection after release")
+nox.test.assert_eq_int(cp.in_use_count(), 0, "0 in use after release")
+
+double_release_caught: bool = False
+try:
+    cp.release_connection(s1)
+except PoolError as e1:
+    double_release_caught = True
+    nox.test.assert_true(nox.strings.contains(e1.message, "double release"), "Error message detects double release")
+
+nox.test.assert_true(double_release_caught, "Double release was caught and prevented")
+nox.test.assert_eq_int(cp.idle_count(), 1, "Idle count not corrupted by double release attempt")
+
+# 4. Released session cannot be used anymore
+use_after_release_caught: bool = False
+try:
+    s1.count(test_tbl)
+except ConnectionError as e2:
+    use_after_release_caught = True
+nox.test.assert_true(use_after_release_caught, "Operation on released session fails with ConnectionError")
+
+# 5. Foreign pool release protection
+cp2: ConnectionPool = create_sqlite_pool(":memory:", 2)
+s2: Session = cp2.acquire()
+
+foreign_release_caught: bool = False
+try:
+    cp.release_connection(s2)
+except PoolError as e3:
+    foreign_release_caught = True
+    nox.test.assert_true(nox.strings.contains(e3.message, "pool ID mismatch"), "Error message identifies pool ID mismatch")
+
+nox.test.assert_true(foreign_release_caught, "Releasing session to wrong pool is caught and prevented")
+cp2.release_connection(s2)
+cp2.close_all()
+
+# 6. Uncommitted transaction cleanup on release
+s3: Session = cp.acquire()
+s3.create_table(test_tbl)
+s3.execute_raw("BEGIN TRANSACTION", [])
+s3.insert(test_tbl, {"id": val_int(100), "name": val_str("uncommitted")})
+# Release WITHOUT commit
+cp.release_connection(s3)
+
+# Next acquire gets the recycled connection; verify transaction was rolled back
+s4: Session = cp.acquire()
+count_after: int = s4.count(test_tbl)
+nox.test.assert_eq_int(count_after, 0, "Uncommitted transaction was rolled back on pool release")
+cp.release_connection(s4)
+
+cp.close_all()
+print("pool_lease_test passed")

@@ -8,19 +8,23 @@ from errors import MigrationError
 import nox.db
 from nox.db import Row
 
-# 1. Deterministic checksum computation
+# 1. Deterministic checksum computation (SHA-256)
 m1: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"], ["DROP TABLE users"])
 sum1: str = m1.get_checksum()
-nox.test.assert_eq_int(len(sum1), 8, "Checksum is 8 hex characters")
+nox.test.assert_eq_int(len(sum1), 64, "Checksum is 64 hex characters (SHA-256)")
 nox.test.assert_eq_str(sum1, m1.get_checksum(), "Checksum is deterministic across repeated calls")
 
 # Same content produces identical checksum
 m1_copy: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"], ["DROP TABLE users"])
 nox.test.assert_eq_str(sum1, m1_copy.get_checksum(), "Identical migrations produce identical checksums")
 
-# Modifying SQL produces different checksum
+# Modifying UP SQL produces different checksum
 m1_tampered: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"], ["DROP TABLE users"])
-nox.test.assert_true(sum1 != m1_tampered.get_checksum(), "Modified SQL alters checksum")
+nox.test.assert_true(sum1 != m1_tampered.get_checksum(), "Modified UP SQL alters checksum")
+
+# Modifying DOWN SQL also produces different checksum
+m1_down_tampered: Migration = migration(1, "create_users", ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"], ["DROP TABLE other_users"])
+nox.test.assert_true(sum1 != m1_down_tampered.get_checksum(), "Modified DOWN SQL alters checksum")
 
 # 2. Migration execution records checksum in _feather_migrations
 s: Session = open_sqlite_memory()

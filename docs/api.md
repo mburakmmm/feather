@@ -73,6 +73,9 @@ Initializes a `SELECT *` query projection.
 - `where(pred: Predicate) -> SelectQuery`: Adds initial WHERE predicate.
 - `and_where(pred: Predicate) -> SelectQuery`: Adds predicate with AND logic.
 - `or_where(pred: Predicate) -> SelectQuery`: Adds predicate with OR logic.
+- `where_group(grp: WhereClause, logic: int = 1) -> SelectQuery`: Appends a nested parenthesized WHERE clause group (e.g. `(role = 'admin' OR role = 'moderator')`).
+- `and_where_group(grp: WhereClause) -> SelectQuery`: Appends a parenthesized group with AND logic.
+- `or_where_group(grp: WhereClause) -> SelectQuery`: Appends a parenthesized group with OR logic.
 - `order_by(col: str, direction: int = 1) -> SelectQuery`: Adds ORDER BY clause (`ORDER_ASC` or `ORDER_DESC`).
 - `limit(n: int) -> SelectQuery`: Sets nonnegative LIMIT.
 - `offset(m: int) -> SelectQuery`: Sets nonnegative OFFSET.
@@ -113,11 +116,12 @@ Begins transaction on session and returns active `Transaction`.
 Creates a bounded SQLite connection pool.
 
 ### `class ConnectionPool`
-- `acquire() -> Session`: Borrows a connection and wraps in a Session.
-- `release_connection(s: Session) -> None`: Returns borrowed connection to pool.
-- `close_all() -> None`: Closes all idle connections in pool.
-- `in_use_count() -> int`: Number of currently borrowed connections.
+- `acquire() -> Session`: Borrows a connection and wraps in a Session with a monotonic `lease_id`.
+- `release_connection(s: Session) -> None`: Validates lease, rolls back any uncommitted transactions, invalidates session (`is_released = True`), and returns borrowed connection to idle pool. Raises `PoolError` on double-release or foreign session.
+- `close_all() -> None`: Closes all idle connections in pool and marks pool closed.
+- `in_use_count() -> int`: Number of currently borrowed active leases.
 - `idle_count() -> int`: Number of available idle connections.
+- Invariant guaranteed: `in_use_count() + idle_count() <= max_connections`.
 
 ---
 
@@ -148,7 +152,11 @@ Defines belongs-to foreign key relation.
 
 ### `class RelationLoader`
 - `load_has_many[C](child_model: Model[C], fk_column: str, parent_pk_val: Value) -> list[C]`
+- `load_has_many_batch[C](child_model: Model[C], fk_column: str, parent_pk_vals: list[Value]) -> list[C]`: Eagerly loads all matching children for multiple parent IDs in a single `WHERE fk IN (?, ?, ...)` query, eliminating N+1 queries.
+- `load_relation_has_many_batch[C](rel: Relation, child_model: Model[C], parent_pk_vals: list[Value]) -> list[C]`: Relation wrapper for batched has-many loading.
 - `load_belongs_to[P](parent_model: Model[P], pk_column: str, fk_val: Value) -> P | None`
+- `load_belongs_to_batch[P](parent_model: Model[P], pk_column: str, fk_vals: list[Value]) -> list[P]`: Eagerly loads all matching parent entities for multiple foreign key values in a single `WHERE pk IN (?, ?, ...)` query.
+- `load_relation_belongs_to_batch[P](rel: Relation, parent_model: Model[P], fk_vals: list[Value]) -> list[P]`: Relation wrapper for batched belongs-to loading.
 - `load_has_one[C](child_model: Model[C], fk_column: str, parent_pk_val: Value) -> C | None`
 - `load_many_to_many[T](target_model: Model[T], through_table: str, source_fk: str, target_fk: str, source_pk_val: Value, target_pk_col: str = "id") -> list[T]`
 - `load_relation_many_to_many[T](rel: Relation, target_model: Model[T], source_pk_val: Value) -> list[T]`
