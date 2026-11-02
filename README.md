@@ -1,8 +1,11 @@
 # Feather 🪶
 
-**The lightweight, type-safe SQL data mapper and query toolkit for Nox.**
+**The lightweight, type-safe SQL data mapper and query toolkit for the Nox programming language.**
 
-[![Nox Version](https://img.shields.io/badge/noxc-2.0.27-blue.svg)](https://noxlang.com)
+[![CI](https://github.com/mburakmmm/feather/actions/workflows/ci.yml/badge.svg)](https://github.com/mburakmmm/feather/actions/workflows/ci.yml)
+[![Release](https://github.com/mburakmmm/feather/actions/workflows/release.yml/badge.svg)](https://github.com/mburakmmm/feather/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/mburakmmm/feather?color=blue)](https://github.com/mburakmmm/feather/releases)
+[![Nox Version](https://img.shields.io/badge/noxc-2.0.27%2B-blue.svg)](https://noxlang.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-30%2F30%20passed-brightgreen.svg)]()
 
@@ -260,7 +263,7 @@ Run the full Feather test suite using the standard Nox test runner:
 noxc test
 ```
 
-All 29 test suites run against SQLite in-memory fixtures without requiring external database services.
+All 30 test suites run against SQLite in-memory fixtures without requiring external database services.
 
 ---
 

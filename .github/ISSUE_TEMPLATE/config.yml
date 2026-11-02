@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation & Guides
+    url: https://github.com/mburakmmm/feather/tree/main/docs
+    about: Read the architectural decisions, API reference, and design documentation.
+  - name: 💬 Nox Community & Ecosystem
+    url: https://github.com/mburakmmm/nox-lang
+    about: Ask questions and explore the broader Nox programming language ecosystem.
+  - name: 🛡️ Security Vulnerabilities
+    url: https://github.com/mburakmmm/feather/security/policy
+    about: Report security issues privately per our security policy.

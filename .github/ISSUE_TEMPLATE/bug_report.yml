@@ -1,0 +1,69 @@
+name: 🐛 Bug Report
+description: Create a report to help us improve Feather
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please ensure you have tested against the latest Feather release.
+  - type: input
+    id: nox-version
+    attributes:
+      label: Nox Compiler Version
+      description: What version of Nox are you using? (Run `noxc version`)
+      placeholder: e.g. noxc 2.0.27
+    validations:
+      required: true
+  - type: dropdown
+    id: dialect
+    attributes:
+      label: Database Dialect / Driver
+      description: Which database family did you encounter this with?
+      options:
+        - SQLite (in-memory or file)
+        - PostgreSQL
+        - MySQL / MariaDB
+        - Query compiler / AST / Codecs (dialect-independent)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: What OS are you running on?
+      placeholder: e.g. macOS 14.5 (Apple Silicon), Ubuntu 22.04 LTS, Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal Reproducible Example
+      description: Please provide a minimal, self-contained Nox code snippet that reproduces the issue.
+      render: nox
+      placeholder: |
+        import feather
+        from feather import connect_sqlite, table, col_int, val_int
+        
+        # Reproducible code here
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Output / Error Message
+      description: Paste any error output, stack trace, or compiler error.
+      render: text

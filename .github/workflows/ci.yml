@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Configure Git Line Endings
+        run: git config --global core.autocrlf false
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Nox (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
+          echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
+
+      - name: Install Nox (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
+          echo "$env:USERPROFILE\.nox-lang\bin" >> $env:GITHUB_PATH
+
+      - name: Verify Compiler
+        run: |
+          noxc version
+
+      - name: Static Typecheck
+        run: |
+          noxc check feather.nox
+          noxc check main.nox
+
+      - name: Run Test Suites
+        run: |
+          noxc test
+
+      - name: Run Verification Demo
+        run: |
+          noxc run main.nox

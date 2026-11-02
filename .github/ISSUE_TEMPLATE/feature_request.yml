@@ -1,0 +1,45 @@
+name: 💡 Feature Request
+description: Propose a new feature or improvement for Feather
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feather aims to stay lightweight, type-safe, and predictable (Peewee / SQLModel in spirit, not an oversized ORM).
+        Please review [docs/decisions.md](docs/decisions.md) before proposing major architectural changes.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of what the problem is.
+      placeholder: I am always frustrated when [...]
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution / API Design
+      description: Describe how the API should look in idiomatic Nox syntax.
+      placeholder: |
+        # Proposed Nox syntax
+        # e.g. query.filter(...)
+      render: nox
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you've considered.
+  - type: dropdown
+    id: dialect-impact
+    attributes:
+      label: Target Dialects
+      description: Which SQL engines would this feature support?
+      options:
+        - All supported dialects (SQLite, PostgreSQL, MySQL)
+        - SQLite specific
+        - PostgreSQL specific
+        - MySQL specific
+    validations:
+      required: true
