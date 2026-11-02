@@ -29,7 +29,11 @@ jobs:
 
       - name: Install Nox (Linux / macOS)
         if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TAG=$(curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/mburakmmm/nox-lang/releases/latest | grep '"tag_name"' | head -n1 | cut -d '"' -f 4)
+          export NOX_VERSION="${TAG:-v2.0.108}"
           curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
           echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
 
@@ -37,6 +41,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          $env:NOX_VERSION = "v2.0.108"
           irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
           echo "$env:USERPROFILE\.nox-lang\bin" >> $env:GITHUB_PATH
 
