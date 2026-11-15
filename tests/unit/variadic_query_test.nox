@@ -1,0 +1,46 @@
+# tests/unit/variadic_query_test.nox — Tests for variadic query helpers, keyword-only paginate, and clone.
+
+import nox.test
+from feather import SelectQuery, CompiledQuery, select_cols, select_all, in_vals, eq, val_int, val_str, sqlite_dialect, postgres_dialect, ORDER_DESC, QueryBuildError
+
+# 1. Variadic select_cols & cols
+q1: SelectQuery = select_cols("orders", "id", "total", "status")
+q1.where(in_vals("status", val_str("paid"), val_str("shipped")))
+q1.order_by("id", ORDER_DESC)
+
+cq1: CompiledQuery = q1.compile(sqlite_dialect())
+nox.test.assert_eq_str(cq1.sql, "SELECT \"id\", \"total\", \"status\" FROM \"orders\" WHERE \"status\" IN (?, ?) ORDER BY \"id\" DESC", "variadic select_cols + in_vals SQLite SQL")
+nox.test.assert_eq_int(len(cq1.params), 2, "2 bound params from in_vals")
+
+# 2. PostgreSQL placeholder numbering
+cq1_pg: CompiledQuery = q1.compile(postgres_dialect())
+nox.test.assert_eq_str(cq1_pg.sql, "SELECT \"id\", \"total\", \"status\" FROM \"orders\" WHERE \"status\" IN ($1, $2) ORDER BY \"id\" DESC", "variadic select_cols + in_vals Postgres SQL")
+
+# 3. Variadic group_by_cols
+q_grp: SelectQuery = select_cols("orders", "status")
+q_grp.group_by_cols("status", "region")
+cq_grp: CompiledQuery = q_grp.compile(sqlite_dialect())
+nox.test.assert_eq_str(cq_grp.sql, "SELECT \"status\" FROM \"orders\" GROUP BY \"status\", \"region\"", "variadic group_by_cols SQL")
+
+# 4. Keyword-only paginate & clone independence
+base: SelectQuery = select_all("users").where(eq("active", val_int(1)))
+p1: SelectQuery = base.clone().paginate(1, per_page=10)
+p2: SelectQuery = base.clone().paginate(3, per_page=25)
+
+c_base: CompiledQuery = base.compile(sqlite_dialect())
+c_p1: CompiledQuery = p1.compile(sqlite_dialect())
+c_p2: CompiledQuery = p2.compile(sqlite_dialect())
+
+nox.test.assert_eq_str(c_base.sql, "SELECT * FROM \"users\" WHERE \"active\" = ?", "base query untouched after clone().paginate()")
+nox.test.assert_eq_str(c_p1.sql, "SELECT * FROM \"users\" WHERE \"active\" = ? LIMIT 10 OFFSET 0", "page 1 paginate SQL")
+nox.test.assert_eq_str(c_p2.sql, "SELECT * FROM \"users\" WHERE \"active\" = ? LIMIT 25 OFFSET 50", "page 3 paginate SQL")
+
+# 5. Invalid page / per_page rejected
+bad_page: bool = False
+try:
+    base.clone().paginate(0, per_page=10)
+except QueryBuildError:
+    bad_page = True
+nox.test.assert_true(bad_page, "paginate(page=0) raises QueryBuildError")
+
+print("variadic_query_test passed")

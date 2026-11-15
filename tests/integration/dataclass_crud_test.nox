@@ -1,0 +1,49 @@
+# tests/integration/dataclass_crud_test.nox — Tests for pure-Nox JSON columns + dataclass_model CRUD.
+
+import nox.test
+import nox.json
+from feather import Session, open_sqlite_memory, Table, Value, col_int, col_str, col_float, col_bool, table, val_int, val_str, row_to_json, json_object_to_values
+from mapper import Model, dataclass_model, row_get_json_by_name
+from types import json_parse, json_dump
+
+@dataclass
+@derive("copy", "json")
+class Document:
+    id: int
+    title: str
+    meta_json: str
+    rating: float
+    published: bool
+
+tbl: Table = table("documents", [
+    col_int("id", True),
+    col_str("title"),
+    col_str("meta_json"),
+    col_float("rating"),
+    col_bool("published")
+])
+
+model: Model[Document] = dataclass_model[Document](tbl, lambda r_s: Document.from_json(r_s), lambda doc_d: doc_d.to_json())
+s: Session = open_sqlite_memory()
+s.create_table(tbl)
+
+doc1: Document = Document(10, "Feather Spec", "{\"tags\":[\"sql\",\"nox\"],\"version\":3}", 4.9, True)
+doc1_vals: dict[str, Value] = model.encode(doc1)
+s.insert(tbl, doc1_vals)
+
+fetched: Document | None = s.find_by_id[Document](model, val_int(10))
+nox.test.assert_true(fetched is not None, "Document found via find_by_id")
+if fetched is not None:
+    nox.test.assert_eq_str(fetched.title, "Feather Spec", "title round-tripped")
+    nox.test.assert_true(fetched.published, "bool round-tripped")
+    parsed_meta: JsonValue = json_parse(fetched.meta_json)
+    nox.test.assert_true(nox.json.is_object(parsed_meta), "JSON column payload parsed as JSON object")
+    nox.test.assert_eq_int(nox.json.as_int(nox.json.get(parsed_meta, "version")), 3, "nested JSON field version == 3")
+
+rows: list[Row] = s.query_raw("SELECT id, meta_json FROM documents WHERE id = ?", [val_int(10)])
+jv: JsonValue = row_get_json_by_name(rows[0], "meta_json")
+nox.test.assert_eq_int(nox.json.array_len(nox.json.get(jv, "tags")), 2, "row_get_json_by_name decodes JSON array")
+nox.test.assert_true("sql" in json_dump(jv), "json_dump serializes back to JSON text")
+
+s.close()
+print("dataclass_crud_test passed")

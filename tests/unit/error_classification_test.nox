@@ -1,0 +1,77 @@
+# tests/unit/error_classification_test.nox — Tests for structured error classification & retryability.
+
+import nox.test
+from feather import FeatherError, ConstraintError, UniqueConstraintError, ForeignKeyError, NotNullViolationError, CheckConstraintError, DeadlockError, SerializationFailureError, QueryCanceledError, TransactionError, classify_driver_error, is_retryable_message
+
+# 1. SQLSTATE classification
+e_uniq: FeatherError = classify_driver_error("duplicate key value violates unique constraint", "23505", "", "users", "email", "users_email_key")
+caught_uniq: bool = False
+try:
+    raise e_uniq
+except UniqueConstraintError as ue:
+    caught_uniq = True
+    nox.test.assert_eq_str(ue.sqlstate, "23505", "UniqueConstraintError captures sqlstate")
+    nox.test.assert_eq_str(ue.table, "users", "UniqueConstraintError captures table")
+    nox.test.assert_eq_str(ue.column, "email", "UniqueConstraintError captures column")
+    nox.test.assert_eq_str(ue.constraint, "users_email_key", "UniqueConstraintError captures constraint")
+    nox.test.assert_true(not ue.is_retryable(), "Unique violation is not retryable")
+nox.test.assert_true(caught_uniq, "23505 classifies as UniqueConstraintError")
+
+# 2. Foreign key & not-null SQLSTATE codes
+e_fk: FeatherError = classify_driver_error("fk failed", "23503")
+caught_fk: bool = False
+try:
+    raise e_fk
+except ForeignKeyError:
+    caught_fk = True
+nox.test.assert_true(caught_fk, "23503 classifies as ForeignKeyError")
+
+e_nn: FeatherError = classify_driver_error("null value in column", "23502")
+caught_nn: bool = False
+try:
+    raise e_nn
+except NotNullViolationError:
+    caught_nn = True
+nox.test.assert_true(caught_nn, "23502 classifies as NotNullViolationError")
+
+# 3. Retryable deadlock & serialization errors
+e_dl: FeatherError = classify_driver_error("deadlock detected", "40P01")
+caught_dl: bool = False
+try:
+    raise e_dl
+except DeadlockError as de:
+    caught_dl = True
+    nox.test.assert_true(de.is_retryable(), "DeadlockError is retryable")
+nox.test.assert_true(caught_dl, "40P01 classifies as DeadlockError")
+
+e_ser: FeatherError = classify_driver_error("could not serialize access due to concurrent update", "40001")
+caught_ser: bool = False
+try:
+    raise e_ser
+except SerializationFailureError as se:
+    caught_ser = True
+    nox.test.assert_true(se.is_retryable(), "SerializationFailureError is retryable")
+nox.test.assert_true(caught_ser, "40001 classifies as SerializationFailureError")
+
+# 4. Query canceled (timeout / cancel)
+e_canc: FeatherError = classify_driver_error("canceling statement due to statement timeout", "57014")
+caught_canc: bool = False
+try:
+    raise e_canc
+except QueryCanceledError:
+    caught_canc = True
+nox.test.assert_true(caught_canc, "57014 classifies as QueryCanceledError")
+
+# 5. Message heuristic fallback for SQLite/MySQL
+e_sqlite_uniq: FeatherError = classify_driver_error("UNIQUE constraint failed: items.sku")
+caught_sq: bool = False
+try:
+    raise e_sqlite_uniq
+except UniqueConstraintError:
+    caught_sq = True
+nox.test.assert_true(caught_sq, "SQLite UNIQUE constraint message maps to UniqueConstraintError")
+
+nox.test.assert_true(is_retryable_message("database is locked (SQLITE_BUSY)"), "SQLITE_BUSY message is retryable")
+nox.test.assert_true(not is_retryable_message("syntax error near FROM"), "Syntax error is not retryable")
+
+print("error_classification_test passed")

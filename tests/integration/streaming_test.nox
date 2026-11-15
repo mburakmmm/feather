@@ -1,0 +1,61 @@
+# tests/integration/streaming_test.nox — Tests for lazy yield/Iterator[T] streaming queries.
+
+import nox.test
+from feather import Session, open_sqlite_memory, Table, col_int, col_str, table, val_int, val_str, select_all, SelectQuery, ORDER_ASC
+from mapper import Model, row_get_int, row_get_str
+
+class LogEntry:
+    id: int
+    msg: str
+
+    def __init__(self: LogEntry, id: int, msg: str) -> None:
+        self.id = id
+        self.msg = msg
+
+tbl: Table = table("logs", [col_int("id", True, False, True), col_str("msg")])
+
+def decode_log(r: Row) -> LogEntry:
+    return LogEntry(row_get_int(r, 0), row_get_str(r, 1))
+
+def encode_log(e: LogEntry) -> dict[str, Value]:
+    return {"id": val_int(e.id), "msg": val_str(e.msg)}
+
+log_model: Model[LogEntry] = Model[LogEntry](tbl, decode_log, encode_log)
+
+s: Session = open_sqlite_memory()
+s.create_table(tbl)
+
+i: int = 1
+while i <= 15:
+    s.insert(tbl, {"msg": val_str("entry-" + str(i))})
+    i = i + 1
+
+# 1. s.stream with small chunk_size=4 yields all 15 ordered records lazily
+q: SelectQuery = select_all("logs").order_by("id", ORDER_ASC)
+streamed_ids: list[int] = []
+for entry in s.stream[LogEntry](log_model, q, 4):
+    streamed_ids.append(entry.id)
+
+nox.test.assert_eq_int(len(streamed_ids), 15, "stream yielded all 15 records across chunks")
+nox.test.assert_eq_int(streamed_ids[0], 1, "first streamed ID is 1")
+nox.test.assert_eq_int(streamed_ids[14], 15, "last streamed ID is 15")
+
+# 2. s.stream_rows with early break
+row_count: int = 0
+for r in s.stream_rows(q, chunk_size=3):
+    row_count = row_count + 1
+    if row_count == 5:
+        break
+nox.test.assert_eq_int(row_count, 5, "stream_rows stops early on break")
+
+# 3. s.stream_keyset O(1) seek pagination
+keyset_msgs: list[str] = []
+for kentry in s.stream_keyset[LogEntry](log_model, "id", 4):
+    keyset_msgs.append(kentry.msg)
+
+nox.test.assert_eq_int(len(keyset_msgs), 15, "stream_keyset yielded all 15 records")
+nox.test.assert_eq_str(keyset_msgs[0], "entry-1", "keyset starts at entry-1")
+nox.test.assert_eq_str(keyset_msgs[14], "entry-15", "keyset ends at entry-15")
+
+s.close()
+print("streaming_test passed")

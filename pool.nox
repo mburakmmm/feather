@@ -3,7 +3,7 @@
 import dialects
 from dialects import Dialect, sqlite_dialect
 import session
-from session import Session, FeatherConn, wrap_db_connection
+from session import Session, FeatherConn, wrap_db_connection, safe_sqlite_path
 import errors
 from errors import PoolError
 import nox.sqlite
@@ -74,8 +74,8 @@ class ConnectionPool:
             self.idle_conns = new_idles
 
             # Lightweight health check: verify connection liveness
-            is_alive: bool = True
-            if self.config.ping_on_acquire:
+            is_alive: bool = candidate.is_ok()
+            if is_alive and self.config.ping_on_acquire:
                 try:
                     candidate.query("SELECT 1")
                 except Exception as e_ping:
@@ -108,6 +108,10 @@ class ConnectionPool:
 
         # Session wraps the pooled connection without closing the underlying handle when session closes
         return Session(fc, self.config.dialect, False, self.pool_id, lease_id)
+
+    def lease(self: ConnectionPool) -> PoolLease:
+        s: Session = self.acquire()
+        return PoolLease(self, s)
 
     def release_connection(self: ConnectionPool, s: Session) -> None:
 
@@ -199,3 +203,36 @@ def create_sqlite_pool(db_path: str, max_connections: int = 10, ping_on_acquire:
         conn: nox.sqlite.Connection = nox.sqlite.open(db_path)
         return wrap_db_connection(conn)
     return create_pool(_sqlite_factory, sqlite_dialect(), max_connections, ping_on_acquire)
+
+def create_safe_sqlite_pool(root_dir: str, db_path: str, max_connections: int = 10, ping_on_acquire: bool = True) -> ConnectionPool:
+    resolved: str = safe_sqlite_path(root_dir, db_path)
+    return create_sqlite_pool(resolved, max_connections, ping_on_acquire)
+
+class PoolLease:
+    pool: ConnectionPool
+    session: Session
+    released: bool
+
+    def __init__(self: PoolLease, pool: ConnectionPool, s: Session) -> None:
+        self.pool = pool
+        self.session = s
+        self.released = False
+
+    def __enter__(self: PoolLease) -> Session:
+        return self.session
+
+    def __exit__(self: PoolLease) -> None:
+        self._release_if_needed()
+
+    def __del__(self: PoolLease) -> None:
+        self._release_if_needed()
+
+    def _release_if_needed(self: PoolLease) -> None:
+        if not self.released:
+            self.released = True
+            if not self.session.is_released:
+                try:
+                    self.pool.release_connection(self.session)
+                except Exception as e_rel:
+                    pass
+

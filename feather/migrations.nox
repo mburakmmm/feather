@@ -1,2 +1,2 @@
 import migrations
-from migrations import Migration, MigrationManager, migration, compute_migration_checksum, compute_legacy_migration_checksum, generate_lock_token
+from migrations import Migration, MigrationManager, migration, compute_migration_checksum, compute_legacy_migration_checksum, generate_lock_token, safe_migration_path, load_migration_file, load_migrations_from_dir

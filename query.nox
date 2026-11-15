@@ -108,6 +108,9 @@ def is_not_null(col: str) -> Predicate:
 def is_in(col: str, vals: list[Value]) -> Predicate:
     return Predicate(col, OP_IN, val_null(), vals)
 
+def in_vals(col: str, *vals: Value) -> Predicate:
+    return Predicate(col, OP_IN, val_null(), vals)
+
 class WhereClause:
     entries: list[int]
     predicates: list[Predicate]
@@ -306,6 +309,32 @@ class SelectQuery:
         self.group_cols = cols
         return self
 
+    def group_by_cols(self: SelectQuery, *cols: str) -> SelectQuery:
+        return self.group_by(cols)
+
+    def cols(self: SelectQuery, *columns: str) -> SelectQuery:
+        i: int = 0
+        while i < len(columns):
+            c: str = columns[i]
+            if c != "*" and c != "COUNT(*)":
+                if (nox.strings.starts_with(c, "COUNT(") or
+                    nox.strings.starts_with(c, "SUM(") or
+                    nox.strings.starts_with(c, "AVG(") or
+                    nox.strings.starts_with(c, "MIN(") or
+                    nox.strings.starts_with(c, "MAX(")) and nox.strings.ends_with(c, ")"):
+                    paren_idx: int = nox.strings.index_of(c, "(")
+                    inner_col: str = ""
+                    k_in: int = paren_idx + 1
+                    while k_in < len(c) - 1:
+                        inner_col = inner_col + c[k_in]
+                        k_in = k_in + 1
+                    assert_valid_identifier(inner_col, "aggregate column")
+                else:
+                    assert_valid_identifier(c, "query select column")
+            i = i + 1
+        self.columns = columns
+        return self
+
     def having(self: SelectQuery, pred: Predicate) -> SelectQuery:
         self.having_clause.add(pred, LOGIC_AND)
         return self
@@ -361,6 +390,34 @@ class SelectQuery:
             raise QueryBuildError("OFFSET cannot be negative: " + str(m))
         self.offset_val = m
         return self
+
+    def paginate(self: SelectQuery, page: int, *, per_page: int = 20) -> SelectQuery:
+        if page < 1:
+            raise QueryBuildError("page must be >= 1, got: " + str(page))
+        if per_page <= 0:
+            raise QueryBuildError("per_page must be > 0, got: " + str(per_page))
+        self.limit_val = per_page
+        self.offset_val = (page - 1) * per_page
+        return self
+
+    def clone(self: SelectQuery) -> SelectQuery:
+        cols_copy: list[str] = []
+        for c in self.columns:
+            cols_copy.append(c)
+        q: SelectQuery = SelectQuery(self.table_name, cols_copy)
+        q.where_clause = self.where_clause
+        for oc in self.order_cols:
+            q.order_cols.append(oc)
+        for od in self.order_dirs:
+            q.order_dirs.append(od)
+        q.limit_val = self.limit_val
+        q.offset_val = self.offset_val
+        for j in self.joins:
+            q.joins.append(j)
+        for gc in self.group_cols:
+            q.group_cols.append(gc)
+        q.having_clause = self.having_clause
+        return q
 
     def inner_join(self: SelectQuery, target_tbl: str, left_col: str, right_col: str) -> SelectQuery:
 
@@ -470,4 +527,7 @@ def select_all(table_name: str) -> SelectQuery:
     return SelectQuery(table_name, empty_cols)
 
 def select(table_name: str, columns: list[str]) -> SelectQuery:
+    return SelectQuery(table_name, columns)
+
+def select_cols(table_name: str, *columns: str) -> SelectQuery:
     return SelectQuery(table_name, columns)

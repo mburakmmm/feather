@@ -1,0 +1,63 @@
+# tests/integration/context_manager_test.nox — Tests for with pool.lease() and with session.transaction() and __del__ cleanup.
+
+import nox.test
+from feather import ConnectionPool, PoolLease, create_sqlite_pool, Session, open_sqlite_memory, Transaction, Table, col_int, col_str, table, val_int, val_str, WhereClause, eq, LOGIC_AND, TX_STATE_ACTIVE, TX_STATE_COMMITTED, TX_STATE_ROLLED_BACK, ConnectionError, FeatherError
+
+tbl: Table = table("cm_items", [col_int("id", True), col_str("name")])
+cp: ConnectionPool = create_sqlite_pool(":memory:", 2)
+
+# 1. PoolLease context manager acquires and automatically releases cleanly
+with cp.lease() as s:
+    nox.test.assert_eq_int(cp.in_use_count(), 1, "1 session leased inside with cp.lease()")
+    s.create_table(tbl)
+    s.insert(tbl, {"id": val_int(1), "name": val_str("first")})
+
+nox.test.assert_eq_int(cp.in_use_count(), 0, "PoolLease released automatically after with block")
+nox.test.assert_eq_int(cp.idle_count(), 1, "Connection returned to pool idle queue")
+
+# 2. with s.transaction() commits on explicit commit and rolls back automatically on error
+with cp.lease() as s2:
+    with s2.transaction() as tx:
+        nox.test.assert_eq_int(tx.state, TX_STATE_ACTIVE, "transaction active inside with")
+        s2.insert(tbl, {"id": val_int(2), "name": val_str("committed")})
+        tx.commit()
+    nox.test.assert_eq_int(tx.state, TX_STATE_COMMITTED, "transaction committed")
+
+    # Exception inside with s2.transaction() triggers automatic rollback and cleans connection
+    boom: bool = False
+    try:
+        with s2.transaction() as tx2:
+            s2.insert(tbl, {"id": val_int(3), "name": val_str("should_rollback")})
+            raise FeatherError("simulated failure")
+    except FeatherError:
+        boom = True
+    nox.test.assert_true(boom, "exception propagated out of with s2.transaction()")
+    nox.test.assert_eq_int(s2.count(tbl), 2, "row 3 rolled back, only 2 rows remain")
+
+# 3. PoolLease automatically rolls back dangling transaction and releases even if body raises
+lease_boom: bool = False
+try:
+    with cp.lease() as s3:
+        s3.execute_raw("BEGIN", [])
+        s3.in_transaction = True
+        s3.insert(tbl, {"id": val_int(4), "name": val_str("dangling")})
+        raise FeatherError("lease error")
+except FeatherError:
+    lease_boom = True
+
+nox.test.assert_true(lease_boom, "exception propagated out of with cp.lease()")
+nox.test.assert_eq_int(cp.in_use_count(), 0, "PoolLease released even on unhandled exception")
+
+with cp.lease() as s4:
+    nox.test.assert_eq_int(s4.count(tbl), 2, "dangling tx rolled back by pool before reuse")
+
+# 4. __del__ leak protection on forgotten PoolLease
+def _leak_scope(pool_ref: ConnectionPool) -> None:
+    leaked_lease: PoolLease = pool_ref.lease()
+    nox.test.assert_eq_int(pool_ref.in_use_count(), 1, "lease active inside scope")
+
+_leak_scope(cp)
+nox.test.assert_eq_int(cp.in_use_count(), 0, "__del__ released PoolLease on scope exit")
+
+cp.close_all()
+print("context_manager_test passed")

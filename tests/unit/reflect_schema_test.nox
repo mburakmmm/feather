@@ -1,0 +1,85 @@
+# tests/unit/reflect_schema_test.nox — Tests for nox.reflect declarative table/model derivation.
+
+import nox.test
+import nox.json
+from feather import Table, Column, Value, Session, open_sqlite_memory, TYPE_INTEGER, TYPE_TEXT, TYPE_REAL, TYPE_BOOLEAN, MappingError, eq, val_str
+from mapper import Model
+from reflect_schema import reflect_table, reflect_dataclass_model
+
+@table("customers")
+@primary_key("id")
+@auto_increment("id")
+@unique("email")
+@nullable("nickname")
+@dataclass
+@derive("copy", "json")
+class Customer:
+    id: int
+    email: str
+    score: float
+    active: bool
+    nickname: str | None
+
+# 1. Inspect reflected Table metadata
+tbl: Table = reflect_table("Customer")
+nox.test.assert_eq_str(tbl.name, "customers", "@table decorator sets table name")
+nox.test.assert_eq_str(tbl.primary_key, "id", "@primary_key sets primary key")
+nox.test.assert_eq_int(len(tbl.columns), 5, "all 5 dataclass fields reflected as columns")
+
+c_id: Column | None = tbl.get_column("id")
+nox.test.assert_true(c_id is not None, "id column exists")
+if c_id is not None:
+    nox.test.assert_eq_int(c_id.data_type, TYPE_INTEGER, "id mapped to INTEGER")
+    nox.test.assert_true(c_id.is_primary_key, "id is primary key")
+    nox.test.assert_true(c_id.is_auto_increment, "id is auto increment")
+
+c_email: Column | None = tbl.get_column("email")
+if c_email is not None:
+    nox.test.assert_eq_int(c_email.data_type, TYPE_TEXT, "email mapped to TEXT")
+    nox.test.assert_true(c_email.is_unique, "email marked @unique")
+
+c_score: Column | None = tbl.get_column("score")
+if c_score is not None:
+    nox.test.assert_eq_int(c_score.data_type, TYPE_REAL, "score mapped to REAL")
+
+c_active: Column | None = tbl.get_column("active")
+if c_active is not None:
+    nox.test.assert_eq_int(c_active.data_type, TYPE_BOOLEAN, "active mapped to BOOLEAN")
+
+c_nick: Column | None = tbl.get_column("nickname")
+if c_nick is not None:
+    nox.test.assert_true(c_nick.is_nullable, "str | None / @nullable mapped as nullable")
+
+# 2. Validation catches typos in decorator field names
+@table("bad_models")
+@primary_key("nonexistent_col")
+@dataclass
+class BadModel:
+    id: int
+
+bad_caught: bool = False
+try:
+    reflect_table("BadModel")
+except MappingError:
+    bad_caught = True
+nox.test.assert_true(bad_caught, "Unknown field in @primary_key raises MappingError")
+
+# 3. Full CRUD with reflect_dataclass_model
+model: Model[Customer] = reflect_dataclass_model[Customer]("Customer", lambda raw: Customer.from_json(raw), lambda c: c.to_json(), "")
+s: Session = open_sqlite_memory()
+s.create_table(model.table)
+
+c_in: Customer = Customer(0, "ada@lovelace.org", 98.5, True, None)
+enc: dict[str, Value] = model.encode(c_in)
+enc.pop("id")
+new_id: int = s.insert(model.table, enc)
+nox.test.assert_eq_int(new_id, 1, "auto increment PK assigned")
+
+found: list[Customer] = s.find_where[Customer](model, eq("email", val_str("ada@lovelace.org")))
+nox.test.assert_eq_int(len(found), 1, "1 Customer decoded via reflect_dataclass_model")
+nox.test.assert_eq_str(found[0].email, "ada@lovelace.org", "decoded email matches")
+nox.test.assert_true(found[0].active, "decoded bool matches")
+nox.test.assert_true(found[0].nickname is None, "decoded nullable None matches")
+
+s.close()
+print("reflect_schema_test passed")

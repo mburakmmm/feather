@@ -5,6 +5,31 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-15
+
+### Added
+- **Context Managers & Deterministic Leak Protection (`session.nox`, `pool.nox`):**
+  - Added `with` protocol support (`__enter__`, `__exit__`) on `Transaction` (`with s.transaction() as tx:`) and `PoolLease` (`with cp.lease() as s:`) for guaranteed exception-safe rollback and pool connection return.
+  - Added acyclic ARC destructors (`__del__`) on `Session` and `PoolLease` as last-resort leak guards.
+- **Variadic & Keyword-Only Query / Update Ergonomics (`query.nox`, `session.nox`):**
+  - Added `select_cols(table, *columns)`, `SelectQuery.cols(*columns)`, `SelectQuery.group_by_cols(*cols)`, `in_vals(col, *vals)`, `SelectQuery.clone()`, and keyword-only `SelectQuery.paginate(page, *, per_page=20)`.
+  - Added `Session.update_fields(tbl, where_clause, **fields)`.
+- **Structured Driver Errors, Retryable Transactions & Timeouts (`errors.nox`, `session.nox`):**
+  - Added `sqlstate`, `table`, `column`, `constraint` fields and `is_retryable()` to `FeatherError`.
+  - Added typed subclasses: `UniqueConstraintError`, `ForeignKeyError`, `NotNullViolationError`, `CheckConstraintError`, `DeadlockError`, `SerializationFailureError`, `QueryCanceledError`, plus `classify_driver_error` and `from_postgres_error`.
+  - Added `wrap_postgres_connection`, `create_postgres_session`, `Session.is_ok()`, `set_query_timeout`, `set_statement_timeout`, `set_lock_timeout`, `cancel()`, and `Session.run_in_tx(fn, *, retries=0, backoff_ms=5)`.
+- **Path Traversal Confinement (`session.nox`, `pool.nox`, `migrations.nox`):**
+  - Integrated `nox.path.safe_join` via `safe_sqlite_path`, `connect_sqlite_safe`, `create_safe_sqlite_pool`, and `safe_migration_path`.
+- **Algebraic `SqlValue`, Pure-Nox JSON & Reflection Mapping (`value.nox`, `types.nox`, `mapper.nox`, `reflect_schema.nox`):**
+  - Added tagged `enum SqlValue` (`Integer`, `Float`, `Text`, `Boolean`, `Null`), `bind_sql_value`, `from_sql_value`, and `Value.to_enum()`.
+  - Added pure-Nox `nox.json` helpers (`json_parse`, `json_dump`, `json_dump_pretty`, `row_get_json`, `row_get_json_by_name`, `row_to_json`, `json_object_to_values`, `values_to_json`), `dataclass_model[T]`, `compute_dirty_fields`, and `Session.save_changes` for `@dataclass` + `@derive("copy", "json")` workflows.
+  - Added optional declarative `reflect_schema` module (`reflect_table`, `reflect_dataclass_model`) powered by `nox.reflect` (`@table`, `@primary_key`, `@auto_increment`, `@nullable`, `@unique`).
+- **Lazy Streaming Queries & Disk Migration Loader (`session.nox`, `migrations.nox`):**
+  - Added `yield` / `Iterator[T]` lazy chunked generators `Session.stream[T]`, `Session.stream_rows`, and `O(1)` seek-based `Session.stream_keyset[T]`.
+  - Added `load_migration_file` and `load_migrations_from_dir` using `nox.fs.read_to_string` with `-- +feather Up` / `-- +feather Down` markers.
+- **Examples & Expanded Test Suite:**
+  - Added 10 new unit and integration test suites (`enum_value_test`, `error_classification_test`, `variadic_query_test`, `reflect_schema_test`, `context_manager_test`, `tx_context_test`, `dirty_tracking_test`, `dataclass_crud_test`, `streaming_test`, `safe_path_migration_test`) and 2 new examples (`examples/modern_dataclass.nox`, `examples/streaming_and_with.nox`).
+
 ## [0.2.8] - 2026-10-27
 
 ### Added

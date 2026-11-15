@@ -1,9 +1,24 @@
 # errors.nox — Hierarchical exceptions and error sanitization for Feather.
 
 import nox.strings
+import nox.postgres
+from nox.postgres import PostgresError
 
 class FeatherError(Exception):
-    pass
+    sqlstate: str
+    table: str
+    column: str
+    constraint: str
+
+    def __init__(self, message: str, sqlstate: str = "", table: str = "", column: str = "", constraint: str = "") -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate
+        self.table = table
+        self.column = column
+        self.constraint = constraint
+
+    def is_retryable(self) -> bool:
+        return False
 
 class ConnectionError(FeatherError):
     pass
@@ -23,7 +38,30 @@ class MappingError(FeatherError):
 class ConstraintError(FeatherError):
     pass
 
+class UniqueConstraintError(ConstraintError):
+    pass
+
+class ForeignKeyError(ConstraintError):
+    pass
+
+class NotNullViolationError(ConstraintError):
+    pass
+
+class CheckConstraintError(ConstraintError):
+    pass
+
 class TransactionError(FeatherError):
+    pass
+
+class DeadlockError(TransactionError):
+    def is_retryable(self) -> bool:
+        return True
+
+class SerializationFailureError(TransactionError):
+    def is_retryable(self) -> bool:
+        return True
+
+class QueryCanceledError(TransactionError):
     pass
 
 class DialectError(FeatherError):
@@ -72,3 +110,53 @@ def sanitize_error_message(msg: str) -> str:
         result = new_result
         p_idx = p_idx + 1
     return result
+
+# Classifies structured PostgreSQL SQLSTATE/kind or SQLite/MySQL diagnostic messages
+def classify_driver_error(err_msg: str, sqlstate: str = "", kind: str = "", table: str = "", column: str = "", constraint: str = "") -> FeatherError:
+    safe_msg: str = sanitize_error_message(err_msg)
+
+    if kind == "unique_violation" or sqlstate == "23505":
+        return UniqueConstraintError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "foreign_key_violation" or sqlstate == "23503":
+        return ForeignKeyError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "not_null_violation" or sqlstate == "23502":
+        return NotNullViolationError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "check_violation" or sqlstate == "23514":
+        return CheckConstraintError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "deadlock" or sqlstate == "40P01":
+        return DeadlockError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "serialization_failure" or sqlstate == "40001":
+        return SerializationFailureError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "query_canceled" or sqlstate == "57014":
+        return QueryCanceledError(safe_msg, sqlstate, table, column, constraint)
+    if kind == "connection" or nox.strings.starts_with(sqlstate, "08"):
+        return ConnectionError(safe_msg, sqlstate, table, column, constraint)
+
+    # SQLite & MySQL diagnostic message classification when protocol fields are absent
+    upper_msg: str = nox.strings.upper(safe_msg)
+    if nox.strings.index_of(upper_msg, "UNIQUE CONSTRAINT FAILED") >= 0 or nox.strings.index_of(upper_msg, "DUPLICATE ENTRY") >= 0:
+        return UniqueConstraintError(safe_msg, sqlstate, table, column, constraint)
+    if nox.strings.index_of(upper_msg, "FOREIGN KEY CONSTRAINT") >= 0:
+        return ForeignKeyError(safe_msg, sqlstate, table, column, constraint)
+    if nox.strings.index_of(upper_msg, "NOT NULL CONSTRAINT") >= 0 or nox.strings.index_of(upper_msg, "CANNOT BE NULL") >= 0:
+        return NotNullViolationError(safe_msg, sqlstate, table, column, constraint)
+    if nox.strings.index_of(upper_msg, "CHECK CONSTRAINT") >= 0:
+        return CheckConstraintError(safe_msg, sqlstate, table, column, constraint)
+    if nox.strings.index_of(upper_msg, "DATABASE IS LOCKED") >= 0 or nox.strings.index_of(upper_msg, "SQLITE_BUSY") >= 0 or nox.strings.index_of(upper_msg, "DEADLOCK FOUND") >= 0:
+        return DeadlockError(safe_msg, sqlstate, table, column, constraint)
+    if nox.strings.index_of(upper_msg, "LOCK WAIT TIMEOUT") >= 0:
+        return QueryCanceledError(safe_msg, sqlstate, table, column, constraint)
+
+    return FeatherError(safe_msg, sqlstate, table, column, constraint)
+
+def from_postgres_error(e: PostgresError) -> FeatherError:
+    return classify_driver_error(e.message, e.sqlstate, e.kind, e.table, e.column, e.constraint)
+
+def is_retryable_message(msg: str) -> bool:
+    upper_msg: str = nox.strings.upper(msg)
+    return (nox.strings.index_of(upper_msg, "DATABASE IS LOCKED") >= 0 or
+            nox.strings.index_of(upper_msg, "SQLITE_BUSY") >= 0 or
+            nox.strings.index_of(upper_msg, "DEADLOCK") >= 0 or
+            nox.strings.index_of(upper_msg, "SERIALIZATION FAILURE") >= 0 or
+            nox.strings.index_of(upper_msg, "40001") >= 0 or
+            nox.strings.index_of(upper_msg, "40P01") >= 0)

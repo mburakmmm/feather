@@ -1,2 +1,2 @@
 import errors
-from errors import FeatherError, ConnectionError, QueryBuildError, IdentifierError, BindingError, MappingError, ConstraintError, TransactionError, DialectError, PoolError, MigrationError, RelationError, sanitize_error_message
+from errors import FeatherError, ConnectionError, QueryBuildError, IdentifierError, BindingError, MappingError, ConstraintError, UniqueConstraintError, ForeignKeyError, NotNullViolationError, CheckConstraintError, TransactionError, DeadlockError, SerializationFailureError, QueryCanceledError, DialectError, PoolError, MigrationError, RelationError, sanitize_error_message, classify_driver_error, from_postgres_error, is_retryable_message

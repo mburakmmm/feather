@@ -1,0 +1,47 @@
+# tests/integration/tx_context_test.nox — Tests for Session.run_in_tx retries, update_fields(**kwargs), and timeouts.
+
+import nox.test
+from feather import Session, open_sqlite_memory, Transaction, Table, col_int, col_str, table, val_int, val_str, WhereClause, eq, LOGIC_AND, SerializationFailureError, QueryBuildError
+
+tbl: Table = table("accounts", [col_int("id", True, False, True), col_str("name"), col_int("balance")])
+s: Session = open_sqlite_memory()
+s.create_table(tbl)
+
+nox.test.assert_true(s.is_ok(), "SQLite session reports is_ok()")
+s.set_query_timeout(5000)
+
+# 1. run_in_tx commits automatically when fn returns normally
+s.run_in_tx(lambda tx: s.insert(tbl, {"name": val_str("Alice"), "balance": val_int(100)}))
+nox.test.assert_eq_int(s.count(tbl), 1, "run_in_tx committed row")
+
+# 2. run_in_tx retries on retryable error (SerializationFailureError / DeadlockError)
+class AttemptCounter:
+    calls: int
+    def __init__(self) -> None:
+        self.calls = 0
+
+counter: AttemptCounter = AttemptCounter()
+
+def _flaky_tx(tx: Transaction) -> None:
+    counter.calls = counter.calls + 1
+    s.insert(tbl, {"name": val_str("Temp"), "balance": val_int(999)})
+    if counter.calls < 3:
+        raise SerializationFailureError("simulated serialization failure", "40001")
+
+s.run_in_tx(_flaky_tx, retries=3, backoff_ms=1)
+nox.test.assert_eq_int(counter.calls, 3, "run_in_tx retried until attempt 3 succeeded")
+nox.test.assert_eq_int(s.count(tbl), 2, "failed attempts rolled back cleanly, final attempt committed once")
+
+# 3. update_fields(**kwargs) variadic keyword updates
+wc: WhereClause = WhereClause()
+wc.add(eq("name", val_str("Alice")), LOGIC_AND)
+updated: int = s.update_fields(tbl, wc, balance=val_int(250), name=val_str("Alice Updated"))
+nox.test.assert_eq_int(updated, 1, "update_fields updated 1 matching row")
+
+rows: list[Row] = s.query_raw("SELECT name, balance FROM accounts WHERE id = ?", [val_int(1)])
+nox.test.assert_eq_str(rows[0].get_str(0), "Alice Updated", "kwarg name updated")
+nox.test.assert_eq_int(rows[0].get_int(1), 250, "kwarg balance updated")
+
+s.close()
+nox.test.assert_true(not s.is_ok(), "closed session is no longer is_ok()")
+print("tx_context_test passed")

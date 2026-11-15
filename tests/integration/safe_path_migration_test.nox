@@ -1,0 +1,66 @@
+# tests/integration/safe_path_migration_test.nox — Tests for nox.path.safe_join & nox.fs SQL migration loading.
+
+import nox.test
+import nox.fs
+import nox.os
+import nox.path
+from feather import Session, Migration, MigrationManager, safe_sqlite_path, safe_migration_path, load_migrations_from_dir, create_safe_sqlite_pool, connect_sqlite_safe, ConnectionPool, ConnectionError, MigrationError, sqlite_dialect
+
+tmp_root: str = nox.path.join(nox.os.current_dir(), ".feather_test_tmp_dir")
+nox.fs.create_dir_all(tmp_root)
+
+# 1. Path traversal blocked by safe_sqlite_path and safe_migration_path
+sqlite_traversal: bool = False
+try:
+    bad_db: str = safe_sqlite_path(tmp_root, "../../etc/passwd")
+except ConnectionError:
+    sqlite_traversal = True
+nox.test.assert_true(sqlite_traversal, "safe_sqlite_path blocks .. traversal outside root")
+
+mig_traversal: bool = False
+try:
+    bad_mig: str = safe_migration_path(tmp_root, "../secret.sql")
+except MigrationError:
+    mig_traversal = True
+nox.test.assert_true(mig_traversal, "safe_migration_path blocks .. traversal outside root")
+
+# 2. Safe DB creation inside root via connect_sqlite_safe and create_safe_sqlite_pool
+safe_sess: Session = connect_sqlite_safe(tmp_root, "app_safe.db")
+safe_sess.execute_raw("CREATE TABLE IF NOT EXISTS ping (x INTEGER)", [])
+safe_sess.close()
+
+safe_pool: ConnectionPool = create_safe_sqlite_pool(tmp_root, "app_safe.db", 2)
+with safe_pool.lease() as ps:
+    ps.execute_raw("INSERT INTO ping (x) VALUES (7)", [])
+    rows: list[Row] = ps.query_raw("SELECT x FROM ping", [])
+    nox.test.assert_eq_int(len(rows), 1, "safe pool reads persisted row inside confined dir")
+safe_pool.close_all()
+
+# 3. Directory-based .sql migration files via load_migrations_from_dir
+mig_dir: str = nox.path.join(tmp_root, "migrations")
+nox.fs.create_dir_all(mig_dir)
+
+m2_path: str = nox.path.join(mig_dir, "002_add_posts.sql")
+nox.fs.write_string(m2_path, "-- +feather Up\nCREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT);\n-- +feather Down\nDROP TABLE posts;\n")
+
+m1_path: str = nox.path.join(mig_dir, "001_init_users.sql")
+nox.fs.write_string(m1_path, "-- +feather Up\nCREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);\n-- +feather Down\nDROP TABLE users;\n")
+
+loaded: list[Migration] = load_migrations_from_dir(mig_dir)
+nox.test.assert_eq_int(len(loaded), 2, "2 .sql migrations loaded")
+nox.test.assert_eq_int(loaded[0].version, 1, "loaded migrations sorted ascending by version (001 first)")
+nox.test.assert_eq_str(loaded[0].name, "init_users", "parsed migration name 001")
+nox.test.assert_eq_int(loaded[1].version, 2, "002 second")
+
+mig_sess: Session = connect_sqlite_safe(tmp_root, "mig_test.db")
+mgr: MigrationManager = MigrationManager(mig_sess, loaded)
+
+applied: int = mgr.migrate_up()
+nox.test.assert_eq_int(applied, 2, "both disk .sql migrations applied")
+mig_sess.execute_raw("INSERT INTO users (id, name) VALUES (1, 'Ada')", [])
+mig_sess.execute_raw("INSERT INTO posts (id, user_id, title) VALUES (1, 1, 'Hello')", [])
+mig_sess.close()
+
+# Cleanup temp test directory
+nox.fs.remove_dir_all(tmp_root)
+print("safe_path_migration_test passed")

@@ -3,6 +3,8 @@
 import errors
 from errors import MappingError
 import nox.strings
+import nox.json
+from nox.json import JsonError
 
 # ---------------------------------------------------------------------------
 # 1. Decimal (Lossless arbitrary-precision numeric representation)
@@ -168,3 +170,20 @@ class UUID:
 
 def uuid_parse(s: str) -> UUID:
     return UUID(s)
+
+# ---------------------------------------------------------------------------
+# 4. Pure-Nox JSON Column Helpers (nox.json)
+# ---------------------------------------------------------------------------
+
+def json_parse(raw: str) -> JsonValue:
+    try:
+        return nox.json.parse(raw)
+    except JsonError as e:
+        raise MappingError("invalid JSON column payload: " + e.message)
+
+def json_dump(val: JsonValue) -> str:
+    return nox.json.dump(val)
+
+def json_dump_pretty(val: JsonValue, indent: int = 2) -> str:
+    return nox.json.dump_pretty(val, indent)
+

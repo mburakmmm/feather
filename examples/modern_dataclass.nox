@@ -1,0 +1,60 @@
+# examples/modern_dataclass.nox — Declarative @dataclass + nox.reflect schema, dirty tracking, and SqlValue.
+
+import nox.json
+from feather import Session, Table, Value, SqlValue, open_sqlite_memory, compute_dirty_fields, json_object_to_values, eq, val_str, val_int
+from mapper import Model
+from reflect_schema import reflect_dataclass_model
+
+@table("articles")
+@primary_key("id")
+@auto_increment("id")
+@unique("slug")
+@nullable("summary")
+@dataclass
+@derive("copy", "json")
+class Article:
+    id: int
+    slug: str
+    title: str
+    summary: str | None
+    published: bool
+
+# 1. Derive Table + Model[Article] automatically from Nox compiler reflection metadata
+model: Model[Article] = reflect_dataclass_model[Article]("Article", lambda s: Article.from_json(s), lambda a: a.to_json(), "")
+
+s: Session = open_sqlite_memory()
+s.create_table(model.table)
+
+# 2. Insert a record
+draft: Article = Article(0, "feather-v0-3", "Feather 0.3 Highlights", None, False)
+payload: dict[str, Value] = model.encode(draft)
+payload.pop("id")
+article_id: int = s.insert(model.table, payload)
+
+# 3. Copy & dirty-track only modified fields
+loaded: Article | None = s.find_by_id[Article](model, val_int(article_id))
+if loaded is not None:
+    edited: Article = loaded.copy()
+    edited.published = True
+    edited.summary = "Context managers, lazy streaming, and reflection."
+
+    orig_dict: dict[str, Value] = model.encode(loaded)
+    new_dict: dict[str, Value] = model.encode(edited)
+    changed_rows: int = s.save_changes(model.table, {"id": val_int(article_id)}, orig_dict, new_dict)
+    print("Dirty columns saved, affected rows:", changed_rows)
+
+# 4. Inspect SqlValue tagged union
+sv: SqlValue = val_str("published").to_enum()
+match sv:
+    case SqlValue.Text(label):
+        print("Tagged SqlValue label:", label)
+    case SqlValue.Integer(num):
+        print("Tagged SqlValue num:", num)
+    case SqlValue.Float(fl):
+        print("Tagged SqlValue float:", fl)
+    case SqlValue.Boolean(bl):
+        print("Tagged SqlValue bool:", bl)
+    case SqlValue.Null:
+        print("Tagged SqlValue NULL")
+
+s.close()

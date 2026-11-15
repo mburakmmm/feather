@@ -33,15 +33,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=$(curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/mburakmmm/nox-lang/releases/latest | grep '"tag_name"' | head -n1 | cut -d '"' -f 4)
-          export NOX_VERSION="${TAG:-v2.0.108}"
+          export NOX_VERSION="${TAG:-v2.1.186}"
           curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
           echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
 
       - name: Install Nox (Windows)
         if: runner.os == 'Windows'
         shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $env:NOX_VERSION = "v2.0.108"
+          try {
+            $headers = @{ Authorization = "token $env:GH_TOKEN" }
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/mburakmmm/nox-lang/releases/latest" -Headers $headers
+            $env:NOX_VERSION = $rel.tag_name
+          } catch {
+            $env:NOX_VERSION = "v2.1.186"
+          }
+          if (-not $env:NOX_VERSION) { $env:NOX_VERSION = "v2.1.186" }
           irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
           echo "$env:USERPROFILE\.nox-lang\bin" >> $env:GITHUB_PATH
 

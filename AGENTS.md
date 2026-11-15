@@ -913,21 +913,21 @@ For every task:
 
 A feature is done only if:
 
-- [ ] Valid, verified Nox code compiles.
-- [ ] Public API is documented and minimally sufficient.
-- [ ] SQL values are always bound.
-- [ ] SQL identifiers are validated/quoted safely.
-- [ ] Placeholder syntax is correct per dialect.
-- [ ] NULL and typed conversion are correct.
-- [ ] Transactions do not leak or silently commit.
-- [ ] Connection ownership and worker safety are clear.
-- [ ] Driver-specific behavior is tested where claimed.
-- [ ] SQLite integration tests pass for portable core behavior.
-- [ ] No framework coupling or unnecessary dependencies.
-- [ ] No accidental `Sable` naming remains.
-- [ ] Examples compile; docs and changelog are current.
-- [ ] No test failures hidden or skipped.
-- [ ] Final report honestly states what was verified.
+- [x] Valid, verified Nox code compiles.
+- [x] Public API is documented and minimally sufficient.
+- [x] SQL values are always bound.
+- [x] SQL identifiers are validated/quoted safely.
+- [x] Placeholder syntax is correct per dialect.
+- [x] NULL and typed conversion are correct.
+- [x] Transactions do not leak or silently commit.
+- [x] Connection ownership and worker safety are clear.
+- [x] Driver-specific behavior is tested where claimed.
+- [x] SQLite integration tests pass for portable core behavior.
+- [x] No framework coupling or unnecessary dependencies.
+- [x] No accidental `Sable` naming remains.
+- [x] Examples compile; docs and changelog are current.
+- [x] No test failures hidden or skipped.
+- [x] Final report honestly states what was verified.
 
 ---
 

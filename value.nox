@@ -1,4 +1,4 @@
-# values.nox — Type-safe parameter representation and statement binding for Feather.
+# value.nox — Type-safe parameter representation (both classic Value & ADT SqlValue) and statement binding for Feather.
 
 import nox.db
 from nox.db import Statement
@@ -12,6 +12,45 @@ VAL_FLOAT: int = 2
 VAL_STR: int = 3
 VAL_BOOL: int = 4
 VAL_NULL: int = 5
+
+# Tagged Union / Algebraic Data Type representation for SQL values
+enum SqlValue:
+    Integer(v: int)
+    Float(v: float)
+    Text(v: str)
+    Boolean(v: bool)
+    Null
+
+    def to_string(self: SqlValue) -> str:
+        match self:
+            case SqlValue.Integer(iv):
+                return str(iv)
+            case SqlValue.Float(fv):
+                return str(fv)
+            case SqlValue.Text(tv):
+                return tv
+            case SqlValue.Boolean(bv):
+                if bv:
+                    return "true"
+                return "false"
+            case SqlValue.Null:
+                return "NULL"
+
+def bind_sql_value(stmt: Statement, idx: int, sv: SqlValue) -> None:
+    match sv:
+        case SqlValue.Integer(iv):
+            stmt.bind_int(idx, iv)
+        case SqlValue.Float(fv):
+            stmt.bind_float(idx, fv)
+        case SqlValue.Text(tv):
+            stmt.bind_str(idx, tv)
+        case SqlValue.Boolean(bv):
+            if bv:
+                stmt.bind_int(idx, 1)
+            else:
+                stmt.bind_int(idx, 0)
+        case SqlValue.Null:
+            stmt.bind_null(idx)
 
 class Value:
     kind: int
@@ -29,8 +68,20 @@ class Value:
         self.b = b
         self.is_null = is_null
 
-    def to_string(self: Value) -> str:
+    def to_enum(self: Value) -> SqlValue:
+        if self.kind == VAL_INT:
+            return SqlValue.Integer(self.i)
+        if self.kind == VAL_FLOAT:
+            return SqlValue.Float(self.f)
+        if self.kind == VAL_STR:
+            return SqlValue.Text(self.s)
+        if self.kind == VAL_BOOL:
+            return SqlValue.Boolean(self.b)
+        if self.kind == VAL_NULL:
+            return SqlValue.Null
+        raise BindingError("unsupported value kind: " + str(self.kind))
 
+    def to_string(self: Value) -> str:
         if self.kind == VAL_INT:
             return str(self.i)
         if self.kind == VAL_FLOAT:
@@ -44,7 +95,6 @@ class Value:
         return "NULL"
 
     def equals(self: Value, other: Value) -> bool:
-
         if self.kind != other.kind:
             return False
         if self.kind == VAL_INT:
@@ -58,6 +108,19 @@ class Value:
         if self.kind == VAL_NULL:
             return True
         return False
+
+def from_sql_value(sv: SqlValue) -> Value:
+    match sv:
+        case SqlValue.Integer(iv):
+            return val_int(iv)
+        case SqlValue.Float(fv):
+            return val_float(fv)
+        case SqlValue.Text(tv):
+            return val_str(tv)
+        case SqlValue.Boolean(bv):
+            return val_bool(bv)
+        case SqlValue.Null:
+            return val_null()
 
 def val_int(i: int) -> Value:
     return Value(VAL_INT, i, 0.0, "", False, False)
@@ -84,21 +147,7 @@ def val_uuid(u: UUID) -> Value:
     return Value(VAL_STR, 0, 0.0, u.to_string(), False, False)
 
 def bind_value(stmt: Statement, idx: int, v: Value) -> None:
-    if v.kind == VAL_INT:
-        stmt.bind_int(idx, v.i)
-    elif v.kind == VAL_FLOAT:
-        stmt.bind_float(idx, v.f)
-    elif v.kind == VAL_STR:
-        stmt.bind_str(idx, v.s)
-    elif v.kind == VAL_BOOL:
-        int_val: int = 0
-        if v.b:
-            int_val = 1
-        stmt.bind_int(idx, int_val)
-    elif v.kind == VAL_NULL:
-        stmt.bind_null(idx)
-    else:
-        raise BindingError("unsupported value kind: " + str(v.kind))
+    bind_sql_value(stmt, idx, v.to_enum())
 
 def format_bound_values(params: list[Value]) -> str:
     parts: list[str] = []

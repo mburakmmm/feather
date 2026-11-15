@@ -1,2 +1,2 @@
 import pool
-from pool import ConnectionPool, PoolConfig, create_pool, create_sqlite_pool
+from pool import ConnectionPool, PoolConfig, PoolLease, create_pool, create_sqlite_pool, create_safe_sqlite_pool

@@ -1,0 +1,49 @@
+# examples/streaming_and_with.nox — Idiomatic resource cleanup (`with`), variadic queries, and `yield` streaming.
+
+from feather import ConnectionPool, create_sqlite_pool, Session, Transaction, Table, Value, SelectQuery, col_int, col_str, table, val_int, val_str, select_cols, in_vals, ORDER_ASC
+from mapper import Model, row_get_int, row_get_str
+
+class TaskItem:
+    id: int
+    status: str
+    title: str
+
+    def __init__(self: TaskItem, id: int, status: str, title: str) -> None:
+        self.id = id
+        self.status = status
+        self.title = title
+
+tasks_tbl: Table = table("tasks", [col_int("id", True, False, True), col_str("status"), col_str("title")])
+task_model: Model[TaskItem] = Model[TaskItem](
+    tasks_tbl,
+    lambda r: TaskItem(row_get_int(r, 0), row_get_str(r, 1), row_get_str(r, 2)),
+    lambda t: {"id": val_int(t.id), "status": val_str(t.status), "title": val_str(t.title)}
+)
+
+cp: ConnectionPool = create_sqlite_pool(":memory:", 4)
+
+# Acquire session & run transaction using `with` blocks
+with cp.lease() as s:
+    s.create_table(tasks_tbl)
+
+    with s.transaction() as tx:
+        i: int = 1
+        while i <= 10:
+            st: str = "open"
+            if i % 2 == 0:
+                st = "done"
+            s.insert(tasks_tbl, {"status": val_str(st), "title": val_str("Task #" + str(i))})
+            i = i + 1
+        tx.commit()
+
+    # Variadic query builder with IN + paginate
+    q: SelectQuery = select_cols("tasks", "id", "status", "title").where(in_vals("status", val_str("open"), val_str("done"))).order_by("id", ORDER_ASC)
+    page1: list[TaskItem] = s.execute_query[TaskItem](task_model, q.clone().paginate(1, per_page=3))
+    print("Page 1 items:", len(page1))
+
+    # Lazy O(1) keyset streaming across rows without materializing full result set at once
+    print("Streaming all tasks in chunks of 3:")
+    for item in s.stream_keyset[TaskItem](task_model, "id", 3):
+        print(" -", item.id, item.status, item.title)
+
+cp.close_all()

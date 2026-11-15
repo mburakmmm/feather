@@ -15,6 +15,10 @@ import nox.crypto
 import nox.random
 import nox.time
 import nox.strings
+import nox.fs
+from nox.fs import FsError
+import nox.path
+from nox.path import PathError
 import dialects
 from dialects import DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
 
@@ -885,3 +889,119 @@ class MigrationManager:
             i = i + 1
 
         return lines
+
+def safe_migration_path(root_dir: str, filename: str) -> str:
+    clean: str = nox.strings.trim(filename)
+    if len(clean) == 0:
+        raise MigrationError("migration filename cannot be empty")
+    try:
+        return nox.path.safe_join(root_dir, clean)
+    except PathError as e:
+        raise MigrationError("unsafe migration file path rejected: " + e.message)
+
+def _split_sql_statements(sql_block: str) -> list[str]:
+    out: list[str] = []
+    parts: list[str] = nox.strings.split(sql_block, ";")
+    i: int = 0
+    while i < len(parts):
+        stmt: str = nox.strings.trim(parts[i])
+        if len(stmt) > 0:
+            out.append(stmt)
+        i = i + 1
+    return out
+
+def _parse_migration_filename(fname: str) -> tuple[int, str]:
+    stem: str = fname
+    if nox.strings.ends_with(stem, ".sql"):
+        stem = stem[0:len(stem) - 4]
+    parts: list[str] = nox.strings.splitn(stem, "_", 2)
+    if len(parts) < 2 or len(nox.strings.trim(parts[0])) == 0 or len(nox.strings.trim(parts[1])) == 0:
+        raise MigrationError("invalid migration filename '" + fname + "': expected <version>_<name>.sql")
+    ver_str: str = nox.strings.trim(parts[0])
+    i: int = 0
+    while i < len(ver_str):
+        c: str = ver_str[i]
+        if c < "0" or c > "9":
+            raise MigrationError("invalid migration version prefix in filename '" + fname + "'")
+        i = i + 1
+    ver: int = int(ver_str)
+    if ver <= 0:
+        raise MigrationError("migration version must be > 0 in filename '" + fname + "'")
+    return (ver, nox.strings.trim(parts[1]))
+
+def _parse_migration_sql(content: str) -> tuple[list[str], list[str]]:
+    lines: list[str] = nox.strings.split(content, "\n")
+    up_lines: list[str] = []
+    down_lines: list[str] = []
+    mode: int = 0  # 0 = up (default), 1 = down
+    i: int = 0
+    while i < len(lines):
+        line: str = lines[i]
+        trimmed_lower: str = nox.strings.lower(nox.strings.trim(line))
+        if trimmed_lower == "-- +feather up" or trimmed_lower == "-- +migrate up":
+            mode = 0
+        elif trimmed_lower == "-- +feather down" or trimmed_lower == "-- +migrate down":
+            mode = 1
+        elif nox.strings.starts_with(nox.strings.trim(line), "--"):
+            pass
+        else:
+            if mode == 0:
+                up_lines.append(line)
+            else:
+                down_lines.append(line)
+        i = i + 1
+    up_sql: str = nox.strings.join(up_lines, "\n")
+    down_sql: str = nox.strings.join(down_lines, "\n")
+    return (_split_sql_statements(up_sql), _split_sql_statements(down_sql))
+
+def load_migration_file(dir_path: str, filename: str) -> Migration:
+    full_path: str = safe_migration_path(dir_path, filename)
+    parsed: tuple[int, str] = _parse_migration_filename(filename)
+    ver: int = parsed[0]
+    m_name: str = parsed[1]
+    content: str = ""
+    try:
+        content = nox.fs.read_to_string(full_path)
+    except FsError as e:
+        raise MigrationError("failed to read migration file '" + filename + "': " + e.message)
+    stmts: tuple[list[str], list[str]] = _parse_migration_sql(content)
+    return migration(ver, m_name, stmts[0], stmts[1])
+
+def load_migrations_from_dir(dir_path: str) -> list[Migration]:
+    entries: list[str] = []
+    try:
+        entries = nox.fs.read_dir(dir_path)
+    except FsError as e:
+        raise MigrationError("failed to list migration directory: " + e.message)
+
+    loaded: list[Migration] = []
+    i: int = 0
+    while i < len(entries):
+        entry: str = entries[i]
+        if nox.path.extension(entry) == ".sql":
+            full_path: str = safe_migration_path(dir_path, entry)
+            if nox.fs.is_file(full_path):
+                m: Migration = load_migration_file(dir_path, entry)
+                loaded.append(m)
+        i = i + 1
+
+    # Sort ascending by version
+    sorted_migs: list[Migration] = []
+    while len(loaded) > 0:
+        min_idx: int = 0
+        j: int = 1
+        while j < len(loaded):
+            if loaded[j].version < loaded[min_idx].version:
+                min_idx = j
+            j = j + 1
+        sorted_migs.append(loaded[min_idx])
+        remaining: list[Migration] = []
+        k: int = 0
+        while k < len(loaded):
+            if k != min_idx:
+                remaining.append(loaded[k])
+            k = k + 1
+        loaded = remaining
+
+    return sorted_migs
+

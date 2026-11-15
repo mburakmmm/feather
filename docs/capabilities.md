@@ -2,8 +2,8 @@
 
 ## 1. Compiler and Runtime Environment
 
-- **Compiler Version:** `noxc 2.0.27`
-- **Architecture:** Hosted (macOS / Linux / Windows)
+- **Compiler Version:** `noxc 2.1.186` (validated against Nox 2.1/2.2 language & stdlib features; prior v0.2.x baseline was `noxc 2.0.27`)
+- **Architecture:** Hosted (macOS / Linux / Windows) + Pure-Nox Portable Subset (WASM / Mobile AST & SQL generation)
 - **Standard Library Path:** `~/.nox-lang/lib/nox/stdlib/nox/`
 - **Runtime Object:** `noxrt.o` with POSIX & C runtime shims
 
@@ -11,17 +11,23 @@
 
 | Feature | Status | Evidence / Notes |
 | ------- | ------ | ---------------- |
-| Generic Classes `class Box[T]` | Supported | Verified via test: `Box[T]` instantiates properly with `Box[str]`. |
-| Generic Methods `def method[T](self, x: T) -> T` | Supported | Verified: callable on class instances with explicit type arg `inst.method[T](arg)`. |
-| Free Generic Functions `def fn[T](x: T)` | Limited | Calling `fn[T](x)` causes `unknown generic constructor: fn`. Generic parameters must reside on classes or class methods. |
-| Union Types `T \| None` | Supported | Used in `str \| None`, `int \| None`. Type narrowing with `if var is None:` on local variables functions properly. |
-| Function Types `(A, B) -> C` | Supported | First-class function values can be stored in class fields and called. Used for decoders and callbacks. |
+| Generic Classes `class Box[T]` | Supported | Verified via `Model[T]`. |
+| Generic Methods `def method[T](self, x: T) -> T` | Supported | Verified on `Session` (`find_all[T]`, `stream[T]`, `stream_keyset[T]`). Explicit `[T]` calls require positional arguments (no keyword/default args when `[T]` is explicit). |
+| Generic Functions `def fn[T](x: T)` | Supported (with direct import) | `dataclass_model[T]` and `reflect_dataclass_model[T]` compile cleanly when imported from `mapper` / `reflect_schema` and called with positional arguments. Assign `dict[str, Value]` return values from generic `model.encode(...)` to a typed local variable before passing to another method. |
+| Union Types `T \| None` | Supported | Used in `str \| None`, `int \| None`. Explicit `if x is not None:` checks narrow cleanly in regular functions (avoid optional locals inside generic `yield` coroutines). |
+| Tagged Unions (`enum`) & `match` | Supported | Verified via `enum SqlValue` (`Integer`, `Float`, `Text`, `Boolean`, `Null`). Keep binding names distinct across `case` arms (`iv`, `fv`, `tv`, `bv`). |
+| Context Managers (`with`) & `__del__` | Supported | Verified on `Transaction` (`__enter__`, `__exit__`) and `PoolLease` (`__enter__`, `__exit__`, `__del__`). Keep ownership graphs strictly acyclic so ARC `__del__` runs deterministically. |
+| Iterators & Generators (`yield` / `Iterator[T]`) | Supported | Verified on `Session.stream`, `stream_rows`, and `stream_keyset` with lazy iteration and early `break`. |
+| Variadic & Keyword-Only Parameters (`*args`, `**kwargs`, `*, kw`) | Supported | Verified in `in_vals`, `select_cols`, `group_by_cols`, `paginate`, `run_in_tx`, `update_fields`. |
+| `@dataclass`, `@derive("copy", "json")`, `nox.reflect` | Supported | Verified with custom `@table`, `@primary_key`, `@auto_increment`, `@nullable`, `@unique` decorators in `reflect_schema.nox`. |
+| Function Types `(A, B) -> C` | Supported | First-class function values and `lambda x: expr` closures verified for codecs, `run_in_tx`, and model decoders. |
 | `protocol DbConnection` | Supported | Structural subtyping (duck typing) without explicit `implements`. Includes `close()`, `execute(sql)`, `query(sql)`, `prepare(sql)`. |
-| Exceptions `class MyError(Exception)` | Supported | Full `try...except Exception as e:` and `raise MyError(msg)` supported. |
-| Dictionary Operations `dict[str, Value]` | Supported | Literal `{...}`, `.contains(k)`, `d[k] = v`, `d.keys() -> list[str]` supported. |
-| List Operations `list[T]` | Supported | `len(l)`, `.append(v)`, `l[i]`, empty list initialization `l: list[T] = []` when type-annotated. |
-| Class Method Naming `release()` | Caution | Nox ARC codegen generates `@<mod>_<class>_release` as the destructor symbol. User methods named `release` collide with this symbol during LLVM codegen. Use `release_connection` or alternative names. |
-| Formatter `noxc fmt` | Limitation | `noxc fmt` in 2.0.27 strips generic class headers (e.g. `class Model[T]:` -> `class Model:`) and `pass` in empty classes. Do not use automated in-place formatting on files containing generics. |
+| Exceptions & Virtual Methods | Supported | Subclasses of `FeatherError` (`UniqueConstraintError`, `DeadlockError`, etc.) with polymorphic `is_retryable()` work across `except` handlers (`isinstance` does not exist in Nox). |
+| Dictionary & List Operations | Supported | `dict[str, Value]`, `list[T]`, `.contains(k)`, `d.keys()`, `in` checks verified. |
+| Pure-Nox Portability (`nox.json`, `nox.path`, `nox.crypto`) | Supported | Core modules intentionally avoid C-backed `nox.xxhash`, `nox.yyjson`, and `nox.pcre2` so compilation succeeds on WebAssembly and mobile targets. |
+| Class Method Naming `release()` | Caution | Nox ARC codegen generates `@<mod>_<class>_release` as the destructor symbol. User methods named `release` collide with this symbol. Use `release_connection` or alternative names. |
+| Variable Name Shadowing Imported Modules | Caution | Avoid naming local variables identically to imported module names (e.g., use `cp` instead of `pool` when `pool` is an imported module). |
+| Formatter `noxc fmt` | Limitation | Do not run automated `noxc fmt` on files containing generic class headers without verifying diff. |
 
 ## 3. Database Drivers Audit
 

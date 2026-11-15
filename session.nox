@@ -1,52 +1,98 @@
-# session.nox — Unit of work, database connection wrapper, and CRUD operations for Feather.
+# session.nox — Unit of work, database connection wrapper, transaction context, streaming, and CRUD operations for Feather.
 
 import nox.db
 from nox.db import DbConnection, Row, Statement
+import nox.postgres
+from nox.postgres import PostgresError
+import nox.strings
+import nox.time
+import nox.path
+from nox.path import PathError
 import metadata
-from metadata import Table, Column
+from metadata import Table, Column, TYPE_INTEGER, assert_valid_identifier
 import value
 from value import Value, val_int, val_str, val_float, val_bool, val_null, bind_value
 import dialects
 from dialects import Dialect, DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
 import query
-from query import SelectQuery, WhereClause, Predicate, CompiledQuery, ParamCollector, eq, select, select_all, compile_where_clause, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, LOGIC_OR
+from query import SelectQuery, WhereClause, Predicate, CompiledQuery, ParamCollector, eq, gt, select, select_all, compile_where_clause, OP_IS_NULL, OP_IS_NOT_NULL, OP_IN, OP_NEQ, OP_GT, OP_GTE, OP_LT, OP_LTE, OP_LIKE, LOGIC_OR, ORDER_ASC
 import mapper
 from mapper import Model
 import errors
-from errors import ConnectionError, QueryBuildError, FeatherError
-import nox.strings
+from errors import ConnectionError, QueryBuildError, TransactionError, FeatherError, classify_driver_error, from_postgres_error, is_retryable_message
+
+TX_STATE_IDLE: int = 0
+TX_STATE_ACTIVE: int = 1
+TX_STATE_COMMITTED: int = 2
+TX_STATE_ROLLED_BACK: int = 3
+TX_STATE_FAILED: int = 4
+
+def _default_is_ok() -> bool:
+    return True
+
+def _default_set_timeout(ms: int) -> None:
+    pass
+
+def _default_cancel() -> bool:
+    return False
 
 class FeatherConn:
     prepare_fn: (str) -> Statement
     execute_fn: (str) -> int
     query_fn: (str) -> list[Row]
     close_fn: () -> None
+    is_ok_fn: () -> bool
+    set_query_timeout_fn: (int) -> None
+    set_statement_timeout_fn: (int) -> None
+    set_lock_timeout_fn: (int) -> None
+    cancel_fn: () -> bool
 
     def __init__(self, prepare_fn: (str) -> Statement, execute_fn: (str) -> int, query_fn: (str) -> list[Row], close_fn: () -> None) -> None:
         self.prepare_fn = prepare_fn
         self.execute_fn = execute_fn
         self.query_fn = query_fn
         self.close_fn = close_fn
+        self.is_ok_fn = _default_is_ok
+        self.set_query_timeout_fn = _default_set_timeout
+        self.set_statement_timeout_fn = _default_set_timeout
+        self.set_lock_timeout_fn = _default_set_timeout
+        self.cancel_fn = _default_cancel
 
     def prepare(self, sql: str) -> Statement:
-
         f: (str) -> Statement = self.prepare_fn
         return f(sql)
 
     def execute(self, sql: str) -> int:
-
         f: (str) -> int = self.execute_fn
         return f(sql)
 
     def query(self, sql: str) -> list[Row]:
-
         f: (str) -> list[Row] = self.query_fn
         return f(sql)
 
     def close(self) -> None:
-
         f: () -> None = self.close_fn
         f()
+
+    def is_ok(self) -> bool:
+        f: () -> bool = self.is_ok_fn
+        return f()
+
+    def set_query_timeout(self, ms: int) -> None:
+        f: (int) -> None = self.set_query_timeout_fn
+        f(ms)
+
+    def set_statement_timeout(self, ms: int) -> None:
+        f: (int) -> None = self.set_statement_timeout_fn
+        f(ms)
+
+    def set_lock_timeout(self, ms: int) -> None:
+        f: (int) -> None = self.set_lock_timeout_fn
+        f(ms)
+
+    def cancel(self) -> bool:
+        f: () -> bool = self.cancel_fn
+        return f()
 
 def wrap_db_connection(conn: DbConnection) -> FeatherConn:
     def _prep(sql: str) -> Statement:
@@ -58,6 +104,25 @@ def wrap_db_connection(conn: DbConnection) -> FeatherConn:
     def _close() -> None:
         conn.close()
     return FeatherConn(_prep, _exec, _query, _close)
+
+def wrap_postgres_connection(conn: nox.postgres.Connection) -> FeatherConn:
+    fc: FeatherConn = wrap_db_connection(conn)
+    def _is_ok() -> bool:
+        return conn.is_ok()
+    def _q_timeout(ms: int) -> None:
+        conn.set_query_timeout(ms)
+    def _s_timeout(ms: int) -> None:
+        conn.set_statement_timeout(ms)
+    def _l_timeout(ms: int) -> None:
+        conn.set_lock_timeout(ms)
+    def _cancel() -> bool:
+        return conn.cancel()
+    fc.is_ok_fn = _is_ok
+    fc.set_query_timeout_fn = _q_timeout
+    fc.set_statement_timeout_fn = _s_timeout
+    fc.set_lock_timeout_fn = _l_timeout
+    fc.cancel_fn = _cancel
+    return fc
 
 def _extract_sql_tokens(sql: str) -> list[str]:
     tokens: list[str] = []
@@ -75,6 +140,83 @@ def _extract_sql_tokens(sql: str) -> list[str]:
     if len(curr) > 0:
         tokens.append(curr)
     return tokens
+
+class Transaction:
+    session: Session
+    state: int
+
+    def __init__(self: Transaction, session: Session) -> None:
+        self.session = session
+        self.state = TX_STATE_IDLE
+
+    def is_active(self: Transaction) -> bool:
+        return self.state == TX_STATE_ACTIVE
+
+    def begin(self: Transaction) -> None:
+        if self.state != TX_STATE_IDLE:
+            raise TransactionError("cannot begin transaction: current state is not IDLE (state=" + str(self.state) + ")")
+
+        begin_sql: str = "BEGIN"
+        if self.session.dialect.kind == DIALECT_MYSQL:
+            begin_sql = "START TRANSACTION"
+
+        empty_params: list[Value] = []
+        try:
+            self.session.execute_raw(begin_sql, empty_params)
+            self.state = TX_STATE_ACTIVE
+            self.session.in_transaction = True
+        except Exception as e:
+            self.state = TX_STATE_FAILED
+            self.session.in_transaction = False
+            raise TransactionError("failed to begin transaction: " + e.message)
+
+    def commit(self: Transaction) -> None:
+        if self.state != TX_STATE_ACTIVE:
+            raise TransactionError("cannot commit transaction: transaction is not active (state=" + str(self.state) + ")")
+
+        empty_params: list[Value] = []
+        try:
+            self.session.execute_raw("COMMIT", empty_params)
+            self.state = TX_STATE_COMMITTED
+            self.session.in_transaction = False
+        except Exception as e:
+            self.state = TX_STATE_FAILED
+            self.session.in_transaction = True
+            self.session.is_poisoned = True
+            raise TransactionError("failed to commit transaction: " + e.message)
+
+    def rollback(self: Transaction) -> None:
+        if self.state != TX_STATE_ACTIVE and self.state != TX_STATE_FAILED:
+            raise TransactionError("cannot rollback transaction: transaction is not active or failed (state=" + str(self.state) + ")")
+
+        empty_params: list[Value] = []
+        try:
+            self.session.execute_raw("ROLLBACK", empty_params)
+            self.state = TX_STATE_ROLLED_BACK
+            self.session.in_transaction = False
+        except Exception as e:
+            self.state = TX_STATE_FAILED
+            self.session.in_transaction = True
+            self.session.is_poisoned = True
+            raise TransactionError("failed to rollback transaction: " + e.message)
+
+    def execute(self: Transaction, sql: str, params: list[Value]) -> int:
+        return self.session.execute_raw(sql, params)
+
+    def query(self: Transaction, sql: str, params: list[Value]) -> list[Row]:
+        return self.session.query_raw(sql, params)
+
+    def __enter__(self: Transaction) -> Transaction:
+        if self.state == TX_STATE_IDLE:
+            self.begin()
+        return self
+
+    def __exit__(self: Transaction) -> None:
+        if self.state == TX_STATE_ACTIVE or self.state == TX_STATE_FAILED:
+            try:
+                self.rollback()
+            except Exception as e_rb:
+                self.session.is_poisoned = True
 
 class Session:
     conn: FeatherConn
@@ -98,38 +240,131 @@ class Session:
         self.in_transaction = False
         self.is_poisoned = False
 
-    def _ensure_open(self, allow_cleanup: bool = False) -> None:
+    def __del__(self) -> None:
+        if not self.is_closed and not self.is_released:
+            if self.in_transaction:
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception as e_rb:
+                    pass
+                self.in_transaction = False
+            if self.owns_conn:
+                try:
+                    self.conn.close()
+                except Exception as e_cl:
+                    pass
+                self.is_closed = True
 
+    def is_ok(self) -> bool:
+        if self.is_closed or self.is_released or self.is_poisoned:
+            return False
+        return self.conn.is_ok()
+
+    def set_query_timeout(self, ms: int) -> None:
+        self._ensure_open()
+        self.conn.set_query_timeout(ms)
+
+    def set_statement_timeout(self, ms: int) -> None:
+        self._ensure_open()
+        self.conn.set_statement_timeout(ms)
+
+    def set_lock_timeout(self, ms: int) -> None:
+        self._ensure_open()
+        self.conn.set_lock_timeout(ms)
+
+    def cancel(self) -> bool:
+        if self.is_closed or self.is_released:
+            return False
+        return self.conn.cancel()
+
+    def transaction(self) -> Transaction:
+        self._ensure_open()
+        return Transaction(self)
+
+    def run_in_tx(self, fn: (Transaction) -> None, *, retries: int = 0, backoff_ms: int = 5) -> None:
+        attempt: int = 0
+        while True:
+            self._ensure_open()
+            tx: Transaction = Transaction(self)
+            should_retry: bool = False
+            tx.begin()
+            try:
+                fn(tx)
+                if tx.is_active():
+                    tx.commit()
+                return
+            except FeatherError as fe:
+                if tx.state == TX_STATE_ACTIVE or tx.state == TX_STATE_FAILED:
+                    try:
+                        tx.rollback()
+                    except Exception as e_rb:
+                        self.is_poisoned = True
+                if (fe.is_retryable() or is_retryable_message(fe.message)) and attempt < retries and not self.is_poisoned:
+                    should_retry = True
+                else:
+                    raise fe
+            except PostgresError as pge:
+                if tx.state == TX_STATE_ACTIVE or tx.state == TX_STATE_FAILED:
+                    try:
+                        tx.rollback()
+                    except Exception as e_rb2:
+                        self.is_poisoned = True
+                mapped: FeatherError = from_postgres_error(pge)
+                if (pge.is_retryable() or mapped.is_retryable()) and attempt < retries and not self.is_poisoned:
+                    should_retry = True
+                else:
+                    raise mapped
+            except Exception as e:
+                if tx.state == TX_STATE_ACTIVE or tx.state == TX_STATE_FAILED:
+                    try:
+                        tx.rollback()
+                    except Exception as e_rb3:
+                        self.is_poisoned = True
+                if is_retryable_message(e.message) and attempt < retries and not self.is_poisoned:
+                    should_retry = True
+                else:
+                    raise e
+            if should_retry:
+                attempt = attempt + 1
+                if backoff_ms > 0:
+                    nox.time.sleep_ms(backoff_ms * attempt)
+
+    def _ensure_open(self, allow_cleanup: bool = False) -> None:
         if self.is_closed or self.is_released:
             raise ConnectionError("cannot execute operation on a closed or released Session")
         if self.is_poisoned and not allow_cleanup:
             raise ConnectionError("cannot execute operation on a poisoned Session: connection or transaction state is corrupted")
 
     def create_table(self, tbl: Table) -> None:
-
         self._ensure_open()
         sql: str = self.dialect.create_table_sql(tbl)
         self.conn.execute(sql)
 
     def drop_table(self, tbl: Table) -> None:
-
         self._ensure_open()
         sql: str = self.dialect.drop_table_sql(tbl)
         self.conn.execute(sql)
 
     def execute_raw(self, sql: str, params: list[Value]) -> int:
-
         upper_sql: str = nox.strings.upper(sql)
         tokens: list[str] = _extract_sql_tokens(upper_sql)
 
         is_cleanup: bool = (len(tokens) > 0 and tokens[0] == "ROLLBACK")
         self._ensure_open(is_cleanup)
-        stmt: Statement = self.conn.prepare(sql)
-        i: int = 0
-        while i < len(params):
-            bind_value(stmt, i, params[i])
-            i = i + 1
-        affected: int = stmt.execute()
+        affected: int = 0
+        try:
+            stmt: Statement = self.conn.prepare(sql)
+            i: int = 0
+            while i < len(params):
+                bind_value(stmt, i, params[i])
+                i = i + 1
+            affected = stmt.execute()
+        except FeatherError as fe:
+            raise fe
+        except PostgresError as pge:
+            raise from_postgres_error(pge)
+        except Exception as e:
+            raise classify_driver_error(e.message)
 
         first_token: str = ""
         second_token: str = ""
@@ -145,17 +380,22 @@ class Session:
         return affected
 
     def query_raw(self, sql: str, params: list[Value]) -> list[Row]:
-
         self._ensure_open()
-        stmt: Statement = self.conn.prepare(sql)
-        i: int = 0
-        while i < len(params):
-            bind_value(stmt, i, params[i])
-            i = i + 1
-        return stmt.query()
+        try:
+            stmt: Statement = self.conn.prepare(sql)
+            i: int = 0
+            while i < len(params):
+                bind_value(stmt, i, params[i])
+                i = i + 1
+            return stmt.query()
+        except FeatherError as fe:
+            raise fe
+        except PostgresError as pge:
+            raise from_postgres_error(pge)
+        except Exception as e:
+            raise classify_driver_error(e.message)
 
     def insert(self, tbl: Table, values_dict: dict[str, Value]) -> int:
-
         self._ensure_open()
         col_names: list[str] = []
         placeholders: list[str] = []
@@ -244,7 +484,6 @@ class Session:
         return self.execute_raw(sql, bound_vals)
 
     def upsert(self, tbl: Table, values: dict[str, Value], conflict_target: list[str], update_values: dict[str, Value]) -> int:
-
         self._ensure_open()
         insert_cols: list[str] = []
         all_params: list[Value] = []
@@ -284,7 +523,6 @@ class Session:
         return self.execute_raw(sql, all_params)
 
     def update(self, tbl: Table, values_dict: dict[str, Value], where_clause: WhereClause) -> int:
-
         self._ensure_open()
         if where_clause.is_empty():
             raise QueryBuildError("unfiltered UPDATE prohibited: where_clause must not be empty on table " + tbl.name)
@@ -310,8 +548,10 @@ class Session:
         sql: str = "UPDATE " + q_table + " SET " + nox.strings.join(set_parts, ", ") + " WHERE " + w_sql
         return self.execute_raw(sql, collector.params)
 
-    def update_by_id(self, tbl: Table, id_val: Value, values_dict: dict[str, Value]) -> int:
+    def update_fields(self, tbl: Table, where_clause: WhereClause, **fields: Value) -> int:
+        return self.update(tbl, fields, where_clause)
 
+    def update_by_id(self, tbl: Table, id_val: Value, values_dict: dict[str, Value]) -> int:
         if tbl.primary_key == "":
             raise QueryBuildError("table " + tbl.name + " has no primary key defined")
         wc: WhereClause = WhereClause()
@@ -319,7 +559,6 @@ class Session:
         return self.update(tbl, values_dict, wc)
 
     def update_by_pk(self, tbl: Table, pk_values: dict[str, Value], values_dict: dict[str, Value]) -> int:
-
         if len(tbl.primary_keys) == 0:
             raise QueryBuildError("table " + tbl.name + " has no primary key defined")
         wc: WhereClause = WhereClause()
@@ -332,8 +571,14 @@ class Session:
             i = i + 1
         return self.update(tbl, values_dict, wc)
 
-    def delete(self, tbl: Table, where_clause: WhereClause) -> int:
+    def save_changes(self, tbl: Table, pk_values: dict[str, Value], original: dict[str, Value], current: dict[str, Value]) -> int:
+        self._ensure_open()
+        diff: dict[str, Value] = compute_dirty_fields(tbl, original, current)
+        if len(diff) == 0:
+            return 0
+        return self.update_by_pk(tbl, pk_values, diff)
 
+    def delete(self, tbl: Table, where_clause: WhereClause) -> int:
         self._ensure_open()
         if where_clause.is_empty():
             raise QueryBuildError("unfiltered DELETE prohibited: where_clause must not be empty on table " + tbl.name)
@@ -345,7 +590,6 @@ class Session:
         return self.execute_raw(sql, collector.params)
 
     def delete_by_id(self, tbl: Table, id_val: Value) -> int:
-
         if tbl.primary_key == "":
             raise QueryBuildError("table " + tbl.name + " has no primary key defined")
         wc: WhereClause = WhereClause()
@@ -353,7 +597,6 @@ class Session:
         return self.delete(tbl, wc)
 
     def delete_by_pk(self, tbl: Table, pk_values: dict[str, Value]) -> int:
-
         if len(tbl.primary_keys) == 0:
             raise QueryBuildError("table " + tbl.name + " has no primary key defined")
         wc: WhereClause = WhereClause()
@@ -367,7 +610,6 @@ class Session:
         return self.delete(tbl, wc)
 
     def count(self, tbl: Table) -> int:
-
         self._ensure_open()
         q_table: str = self.dialect.quote_identifier(tbl.name)
         sql: str = "SELECT COUNT(*) FROM " + q_table
@@ -378,7 +620,6 @@ class Session:
         return 0
 
     def count_where(self, tbl: Table, where_clause: WhereClause) -> int:
-
         self._ensure_open()
         q_table: str = self.dialect.quote_identifier(tbl.name)
         sql: str = "SELECT COUNT(*) FROM " + q_table
@@ -393,19 +634,136 @@ class Session:
         return 0
 
     def execute_query[T](self, model: Model[T], q: SelectQuery) -> list[T]:
-
         self._ensure_open()
         compiled: CompiledQuery = q.compile(self.dialect)
         rows: list[Row] = self.query_raw(compiled.sql, compiled.params)
         return model.decode_rows(rows)
 
-    def find_all[T](self, model: Model[T]) -> list[T]:
+    def stream[T](self, model: Model[T], q: SelectQuery, chunk_size: int = 100) -> Iterator[T]:
+        if chunk_size <= 0:
+            raise QueryBuildError("chunk_size must be > 0")
+        self._ensure_open()
+        base_limit: int = q.limit_val
+        base_offset: int = q.offset_val
+        if base_offset < 0:
+            base_offset = 0
+        yielded: int = 0
+        cur_offset: int = base_offset
 
+        while True:
+            take: int = chunk_size
+            if base_limit >= 0:
+                rem: int = base_limit - yielded
+                if rem <= 0:
+                    break
+                if rem < take:
+                    take = rem
+
+            chunk_q: SelectQuery = q.clone()
+            chunk_q.limit(take)
+            chunk_q.offset(cur_offset)
+            items: list[T] = self.execute_query[T](model, chunk_q)
+            if len(items) == 0:
+                break
+
+            idx: int = 0
+            while idx < len(items):
+                yield items[idx]
+                yielded = yielded + 1
+                idx = idx + 1
+
+            if len(items) < take:
+                break
+            cur_offset = cur_offset + len(items)
+
+    def stream_rows(self, q: SelectQuery, *, chunk_size: int = 100) -> Iterator[Row]:
+        if chunk_size <= 0:
+            raise QueryBuildError("chunk_size must be > 0")
+        self._ensure_open()
+        base_limit: int = q.limit_val
+        base_offset: int = q.offset_val
+        if base_offset < 0:
+            base_offset = 0
+        yielded: int = 0
+        cur_offset: int = base_offset
+
+        while True:
+            take: int = chunk_size
+            if base_limit >= 0:
+                rem: int = base_limit - yielded
+                if rem <= 0:
+                    break
+                if rem < take:
+                    take = rem
+
+            chunk_q: SelectQuery = q.clone()
+            chunk_q.limit(take)
+            chunk_q.offset(cur_offset)
+            compiled: CompiledQuery = chunk_q.compile(self.dialect)
+            rows: list[Row] = self.query_raw(compiled.sql, compiled.params)
+            if len(rows) == 0:
+                break
+
+            idx: int = 0
+            while idx < len(rows):
+                yield rows[idx]
+                yielded = yielded + 1
+                idx = idx + 1
+
+            if len(rows) < take:
+                break
+            cur_offset = cur_offset + len(rows)
+
+    def stream_keyset[T](self, model: Model[T], pk_col: str, chunk_size: int = 100) -> Iterator[T]:
+        if chunk_size <= 0:
+            raise QueryBuildError("chunk_size must be > 0")
+        assert_valid_identifier(pk_col, "keyset primary key")
+        self._ensure_open()
+
+        has_last: bool = False
+        last_pk: Value = val_null()
+        while True:
+            q: SelectQuery = select_all(model.table.name)
+            if has_last:
+                q.where(gt(pk_col, last_pk))
+            q.order_by(pk_col, ORDER_ASC)
+            q.limit(chunk_size)
+            compiled: CompiledQuery = q.compile(self.dialect)
+            rows: list[Row] = self.query_raw(compiled.sql, compiled.params)
+            if len(rows) == 0:
+                break
+
+            last_row: Row = rows[len(rows) - 1]
+            pk_idx: int = mapper.find_column_index(last_row, pk_col)
+            if pk_idx < 0:
+                raise QueryBuildError("keyset column '" + pk_col + "' missing from query result")
+
+            is_int_pk: bool = False
+            ci: int = 0
+            while ci < len(model.table.columns):
+                c: Column = model.table.columns[ci]
+                if c.name == pk_col and c.data_type == TYPE_INTEGER:
+                    is_int_pk = True
+                ci = ci + 1
+            if is_int_pk:
+                last_pk = val_int(last_row.get_int(pk_idx))
+            else:
+                last_pk = val_str(last_row.get_str(pk_idx))
+            has_last = True
+
+            i: int = 0
+            while i < len(rows):
+                yield model.decode(rows[i])
+                i = i + 1
+
+            if len(rows) < chunk_size:
+                break
+
+    def find_all[T](self, model: Model[T]) -> list[T]:
         q: SelectQuery = select_all(model.table.name)
         return self.execute_query[T](model, q)
 
     def find_by_id[T](self, model: Model[T], id_val: Value) -> T | None:
-
         if model.table.primary_key == "":
             raise QueryBuildError("table " + model.table.name + " has no primary key defined")
         q: SelectQuery = select_all(model.table.name)
@@ -417,7 +775,6 @@ class Session:
         return None
 
     def find_by_pk[T](self, model: Model[T], pk_values: dict[str, Value]) -> T | None:
-
         if len(model.table.primary_keys) == 0:
             raise QueryBuildError("table " + model.table.name + " has no primary key defined")
         q: SelectQuery = select_all(model.table.name)
@@ -435,17 +792,50 @@ class Session:
         return None
 
     def find_where[T](self, model: Model[T], pred: Predicate) -> list[T]:
-
         q: SelectQuery = select_all(model.table.name)
         q.where(pred)
         return self.execute_query[T](model, q)
 
     def close(self) -> None:
-
         if self.owns_conn and not self.is_closed:
             self.conn.close()
             self.is_closed = True
 
+def compute_dirty_fields(tbl: Table, original: dict[str, Value], current: dict[str, Value]) -> dict[str, Value]:
+    diff: dict[str, Value] = {}
+    i: int = 0
+    while i < len(tbl.columns):
+        col: Column = tbl.columns[i]
+        c_name: str = col.name
+        if current.contains(c_name) and not col.is_primary_key:
+            cur_val: Value = current[c_name]
+            if not original.contains(c_name):
+                diff[c_name] = cur_val
+            else:
+                orig_val: Value = original[c_name]
+                if not orig_val.equals(cur_val):
+                    diff[c_name] = cur_val
+        i = i + 1
+    return diff
+
+def begin_transaction(s: Session) -> Transaction:
+    tx: Transaction = Transaction(s)
+    tx.begin()
+    return tx
+
 def create_session(conn: DbConnection, dialect: Dialect, owns_conn: bool = True) -> Session:
     fc: FeatherConn = wrap_db_connection(conn)
     return Session(fc, dialect, owns_conn)
+
+def create_postgres_session(conn: nox.postgres.Connection, dialect: Dialect, owns_conn: bool = True) -> Session:
+    fc: FeatherConn = wrap_postgres_connection(conn)
+    return Session(fc, dialect, owns_conn)
+
+def safe_sqlite_path(root_dir: str, db_path: str) -> str:
+    clean: str = nox.strings.trim(db_path)
+    if len(clean) == 0:
+        raise ConnectionError("SQLite database path cannot be empty")
+    try:
+        return nox.path.safe_join(root_dir, clean)
+    except PathError as e:
+        raise ConnectionError("unsafe SQLite database path rejected: " + e.message)

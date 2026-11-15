@@ -1,0 +1,50 @@
+# tests/integration/dirty_tracking_test.nox — Tests for @dataclass @derive("copy", "json") dirty tracking & save_changes.
+
+import nox.test
+import nox.json
+from feather import Session, open_sqlite_memory, Table, Value, col_int, col_str, col_bool, table, val_int, val_str, compute_dirty_fields, json_object_to_values
+
+@dataclass
+@derive("copy", "json")
+class Profile:
+    id: int
+    username: str
+    role: str
+    active: bool
+
+tbl: Table = table("profiles", [
+    col_int("id", True, False, True),
+    col_str("username"),
+    col_str("role"),
+    col_bool("active")
+])
+
+s: Session = open_sqlite_memory()
+s.create_table(tbl)
+
+p1: Profile = Profile(1, "melih", "user", True)
+orig_vals: dict[str, Value] = json_object_to_values(p1.to_json())
+s.insert(tbl, orig_vals)
+
+# Copy snapshot via @derive("copy"), mutate field, compute minimal diff
+p_edit: Profile = p1.copy()
+p_edit.role = "admin"
+cur_vals: dict[str, Value] = json_object_to_values(p_edit.to_json())
+
+diff: dict[str, Value] = compute_dirty_fields(tbl, orig_vals, cur_vals)
+nox.test.assert_eq_int(len(diff), 1, "only 1 changed column detected in dirty diff")
+nox.test.assert_true(diff.contains("role"), "dirty diff contains changed 'role' column")
+
+affected: int = s.save_changes(tbl, {"id": val_int(1)}, orig_vals, cur_vals)
+nox.test.assert_eq_int(affected, 1, "save_changes updated 1 row")
+
+# Unchanged save_changes is a safe no-op returning 0 without hitting DB error
+noop_affected: int = s.save_changes(tbl, {"id": val_int(1)}, cur_vals, cur_vals)
+nox.test.assert_eq_int(noop_affected, 0, "save_changes returns 0 when no columns changed")
+
+rows: list[Row] = s.query_raw("SELECT username, role FROM profiles WHERE id = ?", [val_int(1)])
+nox.test.assert_eq_str(rows[0].get_str(0), "melih", "unchanged username intact")
+nox.test.assert_eq_str(rows[0].get_str(1), "admin", "dirty column updated to admin")
+
+s.close()
+print("dirty_tracking_test passed")

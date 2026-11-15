@@ -228,3 +228,34 @@ Executes an upsert operation. Emits `ON CONFLICT (...) DO UPDATE SET ...` / `DO 
 - `uuid_parse(uuid_str: str) -> UUID`: Validates and parses 36-char canonical hex UUID string.
 - Row getters: `row_get_decimal`, `row_get_opt_decimal`, `row_get_datetime`, `row_get_opt_datetime`, `row_get_uuid`, `row_get_opt_uuid`.
 - Value constructors: `val_decimal`, `val_datetime`, `val_uuid`.
+
+---
+
+## v0.3.0 Additions (Nox 2.1/2.2 Language & Stdlib Integration)
+
+### Context Managers & Retryable Transactions
+- `with cp.lease() as s:` (`PoolLease.__enter__`, `__exit__`, `__del__`): Automatically rolls back dangling transactions and returns pooled connections on scope exit.
+- `with s.transaction() as tx:` (`Transaction.__enter__`, `__exit__`): Automatically rolls back active transactions when leaving the `with` block without `tx.commit()`.
+- `Session.run_in_tx(fn: (Transaction) -> None, *, retries: int = 0, backoff_ms: int = 5)`: Executes `fn` inside a managed transaction and retries transient errors (`DeadlockError`, `SerializationFailureError`, `SQLITE_BUSY`).
+- `Session.is_ok()`, `set_query_timeout(ms)`, `set_statement_timeout(ms)`, `set_lock_timeout(ms)`, `cancel()`, `create_postgres_session(...)`, `wrap_postgres_connection(...)`.
+
+### Variadic Queries & Keyword Updates
+- `select_cols(table_name: str, *columns: str) -> SelectQuery`
+- `SelectQuery.cols(*columns: str)`, `SelectQuery.group_by_cols(*cols: str)`, `in_vals(col: str, *vals: Value)`
+- `SelectQuery.paginate(page: int, *, per_page: int = 20)`, `SelectQuery.clone()`
+- `Session.update_fields(tbl: Table, where_clause: WhereClause, **fields: Value) -> int`
+
+### Structured Error Classification & `SqlValue` Enum
+- Subclasses: `UniqueConstraintError`, `ForeignKeyError`, `NotNullViolationError`, `CheckConstraintError`, `DeadlockError`, `SerializationFailureError`, `QueryCanceledError`.
+- Helpers: `classify_driver_error(...)`, `from_postgres_error(e)`, `FeatherError.is_retryable()`, `FeatherError.sqlstate / table / column / constraint`.
+- `enum SqlValue` (`Integer`, `Float`, `Text`, `Boolean`, `Null`), `bind_sql_value(stmt, idx, sv)`, `from_sql_value(sv)`, `Value.to_enum()`.
+
+### Pure-Nox JSON, Dirty Tracking & Reflection Schemas
+- `json_parse`, `json_dump`, `json_dump_pretty`, `row_get_json`, `row_get_json_by_name`, `row_get_opt_json`, `row_to_json`, `json_object_to_values`, `values_to_json`.
+- `dataclass_model[T](tbl, from_json_fn, to_json_fn) -> Model[T]`, `compute_dirty_fields(tbl, original, current)`, `Session.save_changes(tbl, pk_values, original, current)`.
+- `reflect_schema.reflect_table(class_name: str, *, table_name: str = "") -> Table` & `reflect_schema.reflect_dataclass_model[T](...)` reading `@table`, `@primary_key`, `@auto_increment`, `@nullable`, `@unique`.
+
+### Lazy Streaming & Confined Paths / SQL Files
+- `Session.stream[T](model, q, chunk_size=100) -> Iterator[T]`, `Session.stream_rows(q, *, chunk_size=100) -> Iterator[Row]`, `Session.stream_keyset[T](model, pk_col, chunk_size=100) -> Iterator[T]`.
+- `safe_sqlite_path(root_dir, db_path)`, `connect_sqlite_safe(root_dir, db_path)`, `create_safe_sqlite_pool(root_dir, db_path, ...)`
+- `safe_migration_path(root_dir, filename)`, `load_migration_file(dir_path, filename)`, `load_migrations_from_dir(dir_path) -> list[Migration]`.

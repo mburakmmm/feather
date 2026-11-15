@@ -5,9 +5,9 @@
 [![CI](https://github.com/mburakmmm/feather/actions/workflows/ci.yml/badge.svg)](https://github.com/mburakmmm/feather/actions/workflows/ci.yml)
 [![Release](https://github.com/mburakmmm/feather/actions/workflows/release.yml/badge.svg)](https://github.com/mburakmmm/feather/actions/workflows/release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/mburakmmm/feather?color=blue)](https://github.com/mburakmmm/feather/releases)
-[![Nox Version](https://img.shields.io/badge/noxc-2.0.27%2B-blue.svg)](https://noxlang.com)
+[![Nox Version](https://img.shields.io/badge/noxc-2.1.186%2B-blue.svg)](https://noxlang.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-30%2F30%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-40%2F40%20passed-brightgreen.svg)]()
 
 Feather makes everyday database work in the [Nox programming language](https://github.com/mburakmmm/nox-lang) intuitive, predictable, and safe. Think **Peewee / SQLModel in spirit**: explicit typed model mapping, parameterized CRUD, query construction, transaction management, connection pooling, and schema migrations — built directly on Nox's standard library with zero external dependencies.
 
@@ -29,7 +29,8 @@ Feather makes everyday database work in the [Nox programming language](https://g
 - 📦 **Schema Migrations with Statement-Level Lease Fencing, Auto-Upgrade & Strict Advisory Locks:** Versioned migrations with truly atomic single-statement lock acquisition (`_feather_migration_lock`), cryptographic UUID ownership tokens (`owner_token`), statement-level active lease heartbeat & fencing (`refresh_lock`), dialect-safe advisory lock result parsing (`parse_advisory_lock_result`) with isolated namespace keys (`117901`), non-transactional DDL state tracking (`RUNNING`, `APPLIED`, `FAILED` for MySQL implicit commits), validated administrative state recovery (`repair_migration_status`, `drop_migration_record`), re-verified automatic metadata self-upgrade across older versions via non-destructive `ALTER TABLE`, robust error-propagating dry runs (`preview_up`, `preview_down`), standard `nox.crypto.sha256` tamper protection, deterministic auto-sorting of out-of-order migrations, duplicate version rejection, and detection of missing/unknown applied versions.
 - 🔗 **Relationship Loaders & Batched Eager Loading:** Explicit `has_one`, `has_many`, `belongs_to`, and `many_to_many` loaders with `load_has_many_batch`, `load_belongs_to_batch`, `load_has_many_grouped` (`dict[int, list[C]]`), and `load_has_many_grouped_str` (`dict[str, list[C]]` for string & UUID keys) with parameter chunking eliminating N+1 queries.
 - 🖥️ **CLI Migration & Verification Tool:** Run `feather demo`, `feather migrate status`, `feather migrate up`, and `feather migrate down`.
-- ⚡ **Zero External Dependencies:** Built 100% on Nox standard library modules (`nox.db`, `nox.sqlite`, `nox.postgres`, `nox.mysql`, `nox.strings`, `nox.crypto`, `nox.test`, `nox.os`).
+- ⚡ **Zero External Dependencies (100% Pure Nox Core):** Built natively on Nox standard library modules (`nox.db`, `nox.sqlite`, `nox.postgres`, `nox.mysql`, `nox.json`, `nox.reflect`, `nox.path`, `nox.fs`, `nox.strings`, `nox.crypto`, `nox.test`, `nox.os`).
+- 🧬 **Modern Nox 2.1/2.2 Ergonomics (`v0.3.0`):** Context managers (`with cp.lease() as s:`, `with s.transaction() as tx:`), deterministic ARC `__del__` leak guards, `@dataclass` + `@derive("copy", "json")` dirty-tracking (`save_changes`), optional declarative schemas (`@table`, `@primary_key`, `reflect_table`), tagged `enum SqlValue`, structured error subclasses (`UniqueConstraintError`, `DeadlockError`, etc.) with `run_in_tx` retries, variadic `select_cols` / `in_vals` / `update_fields(**kwargs)`, lazy `yield` streaming (`stream`, `stream_keyset`), and `nox.path.safe_join` path confinement.
 
 ---
 

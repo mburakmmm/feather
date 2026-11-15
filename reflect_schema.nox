@@ -1,0 +1,192 @@
+# reflect_schema.nox — Optional declarative model metadata builder via nox.reflect and @dataclass.
+
+import nox.reflect
+import nox.strings
+import metadata
+from metadata import Column, Table, table, TYPE_INTEGER, TYPE_TEXT, TYPE_REAL, TYPE_BOOLEAN
+import mapper
+from mapper import Model, dataclass_model
+import errors
+from errors import MappingError
+
+def _contains_str(items: list[str], target: str) -> bool:
+    i: int = 0
+    while i < len(items):
+        if items[i] == target:
+            return True
+        i = i + 1
+    return False
+
+def _collect_decorator_strings(dec_idx: int, out: list[str]) -> None:
+    argc: int = nox.reflect.decorator_arg_count(dec_idx)
+    j: int = 0
+    while j < argc:
+        kind: int = nox.reflect.decorator_arg_kind(dec_idx, j)
+        if kind == 0:
+            v: str = nox.strings.trim(nox.reflect.decorator_arg(dec_idx, j))
+            if len(v) > 0 and not _contains_str(out, v):
+                out.append(v)
+        elif kind == 3:
+            llen: int = nox.reflect.decorator_arg_list_len(dec_idx, j)
+            k: int = 0
+            while k < llen:
+                item: str = nox.strings.trim(nox.reflect.decorator_arg_list_item(dec_idx, j, k))
+                if len(item) > 0 and not _contains_str(out, item):
+                    out.append(item)
+                k = k + 1
+        j = j + 1
+
+def _find_class_entry(class_name: str) -> tuple[int, str]:
+    direct: int = nox.reflect.class_index(class_name)
+    if direct >= 0:
+        return (direct, nox.reflect.class_name(direct))
+
+    count: int = nox.reflect.class_count()
+    suffix: str = "_" + class_name
+    matched_idx: int = -1
+    matched_name: str = ""
+    i: int = 0
+    while i < count:
+        cname: str = nox.reflect.class_name(i)
+        if cname == class_name or nox.strings.ends_with(cname, suffix):
+            if matched_idx >= 0:
+                raise MappingError("ambiguous reflected class name '" + class_name + "': both '" + matched_name + "' and '" + cname + "' match")
+            matched_idx = i
+            matched_name = cname
+        i = i + 1
+
+    if matched_idx < 0:
+        raise MappingError("class not found in reflection metadata: " + class_name)
+    return (matched_idx, matched_name)
+
+def _to_snake_lower(name: str) -> str:
+    out: str = ""
+    i: int = 0
+    while i < len(name):
+        c: str = name[i]
+        if c >= "A" and c <= "Z":
+            if i > 0 and len(out) > 0 and not nox.strings.ends_with(out, "_"):
+                out = out + "_"
+            out = out + nox.strings.lower(c)
+        else:
+            out = out + c
+        i = i + 1
+    return out
+
+def _map_nox_type(raw_type: str) -> tuple[int, bool]:
+    t: str = nox.strings.trim(raw_type)
+    is_null: bool = False
+
+    if "| None" in t:
+        t = nox.strings.trim(nox.strings.replace(t, "| None", ""))
+        is_null = True
+    elif "|None" in t:
+        t = nox.strings.trim(nox.strings.replace(t, "|None", ""))
+        is_null = True
+    elif "None |" in t:
+        t = nox.strings.trim(nox.strings.replace(t, "None |", ""))
+        is_null = True
+    elif "None|" in t:
+        t = nox.strings.trim(nox.strings.replace(t, "None|", ""))
+        is_null = True
+    elif nox.strings.ends_with(t, "?"):
+        t = nox.strings.trim(t[0:len(t) - 1])
+        is_null = True
+
+    if t == "int":
+        return (TYPE_INTEGER, is_null)
+    if t == "str":
+        return (TYPE_TEXT, is_null)
+    if t == "float":
+        return (TYPE_REAL, is_null)
+    if t == "bool":
+        return (TYPE_BOOLEAN, is_null)
+    if (t == "Decimal" or t == "DateTime" or t == "UUID" or t == "JsonValue"
+            or nox.strings.ends_with(t, "_Decimal") or nox.strings.ends_with(t, ".Decimal")
+            or nox.strings.ends_with(t, "_DateTime") or nox.strings.ends_with(t, ".DateTime")
+            or nox.strings.ends_with(t, "_UUID") or nox.strings.ends_with(t, ".UUID")):
+        return (TYPE_TEXT, is_null)
+
+    raise MappingError("unsupported field type '" + raw_type + "' for reflected SQL mapping")
+
+def reflect_table(class_name: str, *, table_name: str = "") -> Table:
+    found: tuple[int, str] = _find_class_entry(class_name)
+    ci: int = found[0]
+    resolved_cname: str = found[1]
+
+    param_count: int = nox.reflect.class_init_param_count(ci)
+    if param_count == 0:
+        raise MappingError("reflected class '" + class_name + "' has no __init__ parameters (add @dataclass or typed __init__)")
+
+    decorator_table_name: str = ""
+    pk_fields: list[str] = []
+    auto_fields: list[str] = []
+    nullable_fields: list[str] = []
+    unique_fields: list[str] = []
+
+    d_count: int = nox.reflect.decorator_count()
+    di: int = 0
+    while di < d_count:
+        dkind: int = nox.reflect.decorator_kind(di)
+        dtarget: str = nox.reflect.decorator_target_name(di)
+        if dkind == 1 and (dtarget == class_name or dtarget == resolved_cname):
+            dname: str = nox.reflect.decorator_name(di)
+            if dname == "table":
+                if nox.reflect.decorator_arg_count(di) >= 1 and nox.reflect.decorator_arg_kind(di, 0) == 0:
+                    decorator_table_name = nox.strings.trim(nox.reflect.decorator_arg(di, 0))
+            elif dname == "primary_key":
+                _collect_decorator_strings(di, pk_fields)
+            elif dname == "auto_increment":
+                _collect_decorator_strings(di, auto_fields)
+            elif dname == "nullable":
+                _collect_decorator_strings(di, nullable_fields)
+            elif dname == "unique":
+                _collect_decorator_strings(di, unique_fields)
+        di = di + 1
+
+    final_table_name: str = nox.strings.trim(table_name)
+    if len(final_table_name) == 0:
+        final_table_name = decorator_table_name
+    if len(final_table_name) == 0:
+        final_table_name = _to_snake_lower(class_name)
+
+    param_names: list[str] = []
+    cols: list[Column] = []
+    k: int = 0
+    while k < param_count:
+        pname: str = nox.reflect.class_init_param_name(ci, k)
+        ptype: str = nox.reflect.class_init_param_type(ci, k)
+        param_names.append(pname)
+
+        mapped: tuple[int, bool] = _map_nox_type(ptype)
+        sql_type: int = mapped[0]
+        is_null: bool = mapped[1] or _contains_str(nullable_fields, pname)
+        is_pk: bool = _contains_str(pk_fields, pname)
+        is_auto: bool = _contains_str(auto_fields, pname)
+        is_unique: bool = _contains_str(unique_fields, pname)
+
+        if is_pk and is_null:
+            raise MappingError("primary key field '" + pname + "' on class '" + class_name + "' cannot be nullable")
+        if is_auto and sql_type != TYPE_INTEGER:
+            raise MappingError("@auto_increment field '" + pname + "' on class '" + class_name + "' must be int")
+
+        cols.append(Column(pname, sql_type, is_pk, is_null, is_auto, is_unique, None))
+        k = k + 1
+
+    # Validate that every field referenced by decorators exists on the class
+    check_lists: list[list[str]] = [pk_fields, auto_fields, nullable_fields, unique_fields]
+    li: int = 0
+    while li < len(check_lists):
+        lst: list[str] = check_lists[li]
+        fi: int = 0
+        while fi < len(lst):
+            if not _contains_str(param_names, lst[fi]):
+                raise MappingError("decorator references unknown field '" + lst[fi] + "' on class '" + class_name + "'")
+            fi = fi + 1
+        li = li + 1
+
+    return table(final_table_name, cols)
+
+def reflect_dataclass_model[T](class_name: str, from_json_fn: (str) -> T, to_json_fn: (T) -> str, table_name: str = "") -> Model[T]:
+    tbl: Table = reflect_table(class_name, table_name=table_name)
+    return dataclass_model[T](tbl, from_json_fn, to_json_fn)

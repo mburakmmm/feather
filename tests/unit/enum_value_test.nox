@@ -1,0 +1,67 @@
+# tests/unit/enum_value_test.nox — Tests for tagged enum SqlValue, pattern matching, and Statement binding.
+
+import nox.test
+import nox.sqlite
+import nox.db
+from nox.db import Statement, Row
+from feather import SqlValue, Value, val_int, val_float, val_str, val_bool, val_null, from_sql_value, bind_sql_value, VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_NULL
+
+# 1. Construct all variants & inspect via match and to_string()
+s_int: SqlValue = SqlValue.Integer(42)
+s_flt: SqlValue = SqlValue.Float(3.5)
+s_txt: SqlValue = SqlValue.Text("feather")
+s_blt: SqlValue = SqlValue.Boolean(True)
+s_nul: SqlValue = SqlValue.Null
+
+nox.test.assert_eq_str(s_int.to_string(), "42", "SqlValue.Integer.to_string()")
+nox.test.assert_eq_str(s_txt.to_string(), "feather", "SqlValue.Text.to_string()")
+nox.test.assert_eq_str(s_blt.to_string(), "true", "SqlValue.Boolean.to_string()")
+nox.test.assert_eq_str(s_nul.to_string(), "NULL", "SqlValue.Null.to_string()")
+
+# 2. Match expression dispatch with distinct binding names
+matched_tag: str = ""
+match s_txt:
+    case SqlValue.Integer(iv):
+        matched_tag = "int:" + str(iv)
+    case SqlValue.Float(fv):
+        matched_tag = "float:" + str(fv)
+    case SqlValue.Text(tv):
+        matched_tag = "text:" + tv
+    case SqlValue.Boolean(bv):
+        matched_tag = "bool"
+    case SqlValue.Null:
+        matched_tag = "null"
+nox.test.assert_eq_str(matched_tag, "text:feather", "match extracted SqlValue.Text")
+
+# 3. Round-trip Value <-> SqlValue
+v1: Value = from_sql_value(s_int)
+nox.test.assert_eq_int(v1.kind, VAL_INT, "from_sql_value preserves integer kind")
+nox.test.assert_eq_int(v1.i, 42, "from_sql_value preserves int payload")
+
+v2: Value = from_sql_value(s_nul)
+nox.test.assert_eq_int(v2.kind, VAL_NULL, "from_sql_value preserves null kind")
+nox.test.assert_true(v2.is_null, "from_sql_value null flag is True")
+
+sv_round: SqlValue = val_str("nox").to_enum()
+nox.test.assert_eq_str(sv_round.to_string(), "nox", "Value.to_enum() converts back to SqlValue")
+
+# 4. Bind directly into a real SQLite statement
+conn: nox.sqlite.Connection = nox.sqlite.open(":memory:")
+conn.execute("CREATE TABLE t_sv (id INTEGER, score REAL, label TEXT, flag INTEGER, opt TEXT)")
+stmt: Statement = conn.prepare("INSERT INTO t_sv (id, score, label, flag, opt) VALUES (?, ?, ?, ?, ?)")
+bind_sql_value(stmt, 0, SqlValue.Integer(7))
+bind_sql_value(stmt, 1, SqlValue.Float(9.25))
+bind_sql_value(stmt, 2, SqlValue.Text("alpha"))
+bind_sql_value(stmt, 3, SqlValue.Boolean(True))
+bind_sql_value(stmt, 4, SqlValue.Null)
+stmt.execute()
+
+rows: list[Row] = conn.query("SELECT id, score, label, flag, opt FROM t_sv")
+nox.test.assert_eq_int(len(rows), 1, "1 row inserted using bind_sql_value")
+nox.test.assert_eq_int(rows[0].get_int(0), 7, "int bound via SqlValue")
+nox.test.assert_eq_str(rows[0].get_str(2), "alpha", "text bound via SqlValue")
+nox.test.assert_eq_int(rows[0].get_int(3), 1, "boolean True bound as 1")
+nox.test.assert_true(rows[0].is_null(4), "SqlValue.Null bound as NULL")
+conn.close()
+
+print("enum_value_test passed")

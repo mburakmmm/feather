@@ -96,3 +96,29 @@
   5. Bootstrap metadata tables under advisory lock mutual exclusion.
   6. Require migration lock and status whitelist validation on `repair_migration_status()` and `drop_migration_record()`, requiring explicit `force_unlock=True` to alter `APPLIED` migrations.
 - **Consequences:** True cross-dialect advisory lock safety, zero split-brain execution during heavy DDL, verified self-upgrades, and protected administrative recovery operations.
+
+## ADR 014: Context Managers, Acyclic Deterministic `__del__`, and Retryable Transactions
+
+- **Context:** Manual `tx.rollback()` / `cp.release_connection(s)` boilerplate invites connection and transaction leaks when exceptions occur.
+- **Decision:**
+  1. Consolidate `Transaction` into `session.nox` (eliminating circular imports; `transaction.nox` re-exports) and implement `__enter__()` / `__exit__()` on `Transaction` and `PoolLease` (`pool.nox`).
+  2. Keep object ownership strictly acyclic (`PoolLease -> ConnectionPool/Session`, `Transaction -> Session`) so Nox ARC invokes `__del__` deterministically on scope exit without reference cycles.
+  3. Extend `FeatherError` with SQLSTATE/constraint fields, structured error subclasses (`UniqueConstraintError`, `DeadlockError`, `SerializationFailureError`, etc.), and `run_in_tx(..., *, retries=..., backoff_ms=...)` with exponential retry on transient failures.
+- **Consequences:** Exception-safe transaction and pool scoping via `with` blocks plus leak-proof ARC destructors and structured error handling.
+
+## ADR 015: Tagged `SqlValue`, Pure-Nox `nox.json` Codecs, and Optional `nox.reflect` Schema Mapping
+
+- **Context:** Hand-writing row decoders/encoders and `Column` lists for every model creates unnecessary boilerplate on Nox 2.2, while C-backed stdlib modules (`nox.xxhash`, `nox.yyjson`, `nox.pcre2`) break WebAssembly and mobile builds.
+- **Decision:**
+  1. Keep Feather's core 100% pure Nox: use `nox.json`, `nox.path.safe_join`, `nox.crypto`, and `nox.reflect`; exclude unconditional imports of C-backed `nox.xxhash`, `nox.yyjson`, and `nox.pcre2`.
+  2. Provide `enum SqlValue` for pattern-matching value dispatch alongside existing `Value` structs.
+  3. Support `@dataclass` + `@derive("copy", "json")` dirty-tracking (`compute_dirty_fields`, `Session.save_changes`, `dataclass_model[T]`) and optional `reflect_schema.reflect_table` / `reflect_dataclass_model` for `@table`, `@primary_key`, `@auto_increment`, `@nullable`, `@unique`.
+- **Consequences:** Zero-boilerplate declarative models when desired, 100% backward compatibility with explicit `Model[T]`, and strict pure-Nox portability.
+
+## ADR 016: Lazy Chunked Streaming (`yield` / `Iterator[T]`) and Disk SQL Migration Loading
+
+- **Context:** Materializing large tables into a `list[T]` consumes excessive memory, and multi-environment deployments often manage `.sql` files in a migrations directory.
+- **Decision:**
+  1. Add `Session.stream[T]` and `Session.stream_rows` using Nox `yield` generators over chunked `LIMIT`/`OFFSET` slices, plus `Session.stream_keyset[T]` for O(1) ordered keyset pagination.
+  2. Add `safe_migration_path`, `safe_sqlite_path` (`nox.path.safe_join` traversal confinement), and `load_migrations_from_dir` (`nox.fs.read_to_string` parsing `-- +feather Up` / `-- +feather Down`).
+- **Consequences:** Bounded memory iteration over arbitrarily large result sets with safe path confinement for local files.
