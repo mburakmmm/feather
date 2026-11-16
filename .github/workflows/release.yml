@@ -132,8 +132,9 @@ jobs:
       - name: Package Distribution Archives
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          tar --exclude='.git' --exclude='.github' --exclude='*.tar.gz' --exclude='*.zip' -czf "feather-${TAG}.tar.gz" .
-          zip -r "feather-${TAG}.zip" . -x '*.git*' '*.github*' '*.tar.gz' '*.zip'
+          tar --exclude='.git' --exclude='.github' --exclude='.nox' --exclude='*.tar.gz' --exclude='*.zip' -czf "../feather-${TAG}.tar.gz" .
+          zip -r "../feather-${TAG}.zip" . -x '*.git*' '*.github*' '*.nox*' '*.tar.gz' '*.zip'
+          mv "../feather-${TAG}.tar.gz" "../feather-${TAG}.zip" .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -152,4 +153,8 @@ jobs:
       - name: Publish to Nox Central Index
         continue-on-error: true
         run: |
-          noxc publish https://github.com/mburakmmm/feather
+          noxc publish https://github.com/mburakmmm/feather \
+            --ref "${{ steps.vars.outputs.tag }}" \
+            --description "Lightweight, type-safe SQL data mapper and query toolkit for Nox" \
+            --tags orm,sql,sqlite,postgres,mysql,database \
+            --source nox
