@@ -122,3 +122,14 @@
   1. Add `Session.stream[T]` and `Session.stream_rows` using Nox `yield` generators over chunked `LIMIT`/`OFFSET` slices, plus `Session.stream_keyset[T]` for O(1) ordered keyset pagination.
   2. Add `safe_migration_path`, `safe_sqlite_path` (`nox.path.safe_join` traversal confinement), and `load_migrations_from_dir` (`nox.fs.read_to_string` parsing `-- +feather Up` / `-- +feather Down`).
 - **Consequences:** Bounded memory iteration over arbitrarily large result sets with safe path confinement for local files.
+
+## ADR 017: Zero-Allocation JSON Tape Mapping, Exception Cause Chaining, Scalar `match`, and Module Boundaries
+
+- **Context:** Nox `2.2.4` introduced the zero-allocation `nox.json.pos_*` tape navigation API, `2.2.5` added opt-in `__all__` module visibility checks, `2.2.22` added `Exception.cause` (`raise ... from`), and `2.2.37`/`2.2.38` added scalar `match` lowering to LLVM jump tables.
+- **Decision:**
+  1. Replace `JsonValue` node-tree traversal inside `mapper.json_object_to_values` with `nox.json.pos_*` (`pos_root`, `pos_len`, `pos_key`, `pos_at`, `pos_kind`, `pos_int`, `pos_number`, `pos_bool`, `pos_str`, `pos_dump`) and expose `json_pos_get_*` / `row_json_get_*` extractors.
+  2. Chain wrapped driver/JSON/filesystem/path exceptions with `raise ... from e` and use bare `raise` in pass-through `except` blocks so `Exception.cause` preserves original diagnostics without swallowing rollback failures.
+  3. Use scalar `match` for fixed SQLSTATE/dialect/column-type dispatch (`errors.nox`, `dialects.nox`, `mapper.nox`, `reflect_schema.nox`, `value.nox`).
+  4. Enforce compile-time module encapsulation via `__all__` on pure-function/class modules (`errors`, `types`, `mapper`, `reflect_schema`, `pool`, `migrations`); omit `__all__` on constant/enum-exporting modules (`value`, `metadata`, `dialects`, `query`, `session`, `relations`) until `noxc` allows constants/enums in `__all__`.
+  5. Expose `Session.execute_script(sql)` for multi-statement `;`-delimited DDL/migration scripts built on `nox.sqlite` `2.1.195+` while keeping parameterized CRUD strictly in `execute_raw`/`query_raw`.
+- **Consequences:** Faster pure-Nox JSON model encoding/field access, lossless error cause chains, cleaner pattern-matched dispatch, and stricter module hygiene.

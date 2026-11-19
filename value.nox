@@ -69,45 +69,51 @@ class Value:
         self.is_null = is_null
 
     def to_enum(self: Value) -> SqlValue:
-        if self.kind == VAL_INT:
-            return SqlValue.Integer(self.i)
-        if self.kind == VAL_FLOAT:
-            return SqlValue.Float(self.f)
-        if self.kind == VAL_STR:
-            return SqlValue.Text(self.s)
-        if self.kind == VAL_BOOL:
-            return SqlValue.Boolean(self.b)
-        if self.kind == VAL_NULL:
-            return SqlValue.Null
-        raise BindingError("unsupported value kind: " + str(self.kind))
+        match self.kind:
+            case 1:
+                return SqlValue.Integer(self.i)
+            case 2:
+                return SqlValue.Float(self.f)
+            case 3:
+                return SqlValue.Text(self.s)
+            case 4:
+                return SqlValue.Boolean(self.b)
+            case 5:
+                return SqlValue.Null
+            case _:
+                raise BindingError("unsupported value kind: " + str(self.kind))
 
     def to_string(self: Value) -> str:
-        if self.kind == VAL_INT:
-            return str(self.i)
-        if self.kind == VAL_FLOAT:
-            return str(self.f)
-        if self.kind == VAL_STR:
-            return self.s
-        if self.kind == VAL_BOOL:
-            if self.b:
-                return "true"
-            return "false"
-        return "NULL"
+        match self.kind:
+            case 1:
+                return str(self.i)
+            case 2:
+                return str(self.f)
+            case 3:
+                return self.s
+            case 4:
+                if self.b:
+                    return "true"
+                return "false"
+            case _:
+                return "NULL"
 
     def equals(self: Value, other: Value) -> bool:
         if self.kind != other.kind:
             return False
-        if self.kind == VAL_INT:
-            return self.i == other.i
-        if self.kind == VAL_FLOAT:
-            return self.f == other.f
-        if self.kind == VAL_STR:
-            return self.s == other.s
-        if self.kind == VAL_BOOL:
-            return self.b == other.b
-        if self.kind == VAL_NULL:
-            return True
-        return False
+        match self.kind:
+            case 1:
+                return self.i == other.i
+            case 2:
+                return self.f == other.f
+            case 3:
+                return self.s == other.s
+            case 4:
+                return self.b == other.b
+            case 5:
+                return True
+            case _:
+                return False
 
 def from_sql_value(sv: SqlValue) -> Value:
     match sv:

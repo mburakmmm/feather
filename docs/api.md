@@ -259,3 +259,20 @@ Executes an upsert operation. Emits `ON CONFLICT (...) DO UPDATE SET ...` / `DO 
 - `Session.stream[T](model, q, chunk_size=100) -> Iterator[T]`, `Session.stream_rows(q, *, chunk_size=100) -> Iterator[Row]`, `Session.stream_keyset[T](model, pk_col, chunk_size=100) -> Iterator[T]`.
 - `safe_sqlite_path(root_dir, db_path)`, `connect_sqlite_safe(root_dir, db_path)`, `create_safe_sqlite_pool(root_dir, db_path, ...)`
 - `safe_migration_path(root_dir, filename)`, `load_migration_file(dir_path, filename)`, `load_migrations_from_dir(dir_path) -> list[Migration]`.
+
+---
+
+## v0.4.0 Additions (Nox 2.2.38 Runtime, Error Chaining & Tape JSON)
+
+### Zero-Allocation `nox.json.pos_*` Helpers
+- `json_pos_get_str(json_text: str, key: str) -> str`, `json_pos_get_int(json_text: str, key: str) -> int`, `json_pos_get_float(json_text: str, key: str) -> float`, `json_pos_get_bool(json_text: str, key: str) -> bool`.
+- `row_json_get_str(row: Row, idx: int, key: str) -> str`, `row_json_get_int(row: Row, idx: int, key: str) -> int`, `row_json_get_bool(row: Row, idx: int, key: str) -> bool`.
+- `json_object_to_values(json_text: str) -> dict[str, Value]` now walks the JSON tape via `nox.json.pos_*` without allocating intermediate child `JsonValue` trees.
+
+### Multi-Statement SQL Scripts & Compound Context Managers
+- `Session.execute_script(sql: str) -> int`: Executes `;`-delimited DDL/migration scripts sequentially (`nox.sqlite` `2.1.195+` / PostgreSQL multi-statement execution). Parameterized queries continue to use `execute_raw` / `query_raw`.
+- Supports compound `with cp.lease() as s, s.transaction() as tx:` scoping (`noxc 2.2.21+`).
+
+### Exception Cause Chaining & Encapsulation
+- Wrapped driver, JSON, path, transaction, and migration errors propagate the root `Exception.cause` via `raise ... from e` and bare `raise`.
+- Public module APIs in `errors`, `types`, `mapper`, `reflect_schema`, `pool`, and `migrations` are compile-time guarded via `__all__`.

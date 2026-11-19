@@ -6,6 +6,20 @@ import nox.strings
 import nox.json
 from nox.json import JsonError
 
+__all__: list[str] = [
+    "Decimal",
+    "decimal",
+    "DateTime",
+    "datetime",
+    "parse_iso_datetime",
+    "is_valid_uuid",
+    "UUID",
+    "uuid_parse",
+    "json_parse",
+    "json_dump",
+    "json_dump_pretty"
+]
+
 # ---------------------------------------------------------------------------
 # 1. Decimal (Lossless arbitrary-precision numeric representation)
 # ---------------------------------------------------------------------------
@@ -179,7 +193,7 @@ def json_parse(raw: str) -> JsonValue:
     try:
         return nox.json.parse(raw)
     except JsonError as e:
-        raise MappingError("invalid JSON column payload: " + e.message)
+        raise MappingError("invalid JSON column payload: " + e.message) from e
 
 def json_dump(val: JsonValue) -> str:
     return nox.json.dump(val)

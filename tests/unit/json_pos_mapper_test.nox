@@ -1,0 +1,47 @@
+# tests/unit/json_pos_mapper_test.nox — Tests for zero-allocation nox.json.pos_* helpers and Value mapping.
+
+import nox.test
+from feather import Session, open_sqlite_memory, Table, Value, col_int, col_str, table, val_int, val_str, json_object_to_values, json_pos_get_str, json_pos_get_int, json_pos_get_float, json_pos_get_bool, row_json_get_str, row_json_get_int, row_json_get_bool, MappingError, VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_NULL
+
+# 1. Mixed-type JSON object converted via nox.json.pos_* tape navigation
+payload: str = "{\"id\": 9007199254740993, \"ratio\": 3.5, \"name\": \"feather\", \"active\": true, \"deleted_at\": null, \"tags\": [\"orm\", \"sql\"], \"meta\": {\"v\": 4}}"
+vals: dict[str, Value] = json_object_to_values(payload)
+
+nox.test.assert_eq_int(vals["id"].kind, VAL_INT, "large int > 2^53 stays exact VAL_INT")
+nox.test.assert_eq_int(vals["id"].i, 9007199254740993, "exact integer precision preserved")
+nox.test.assert_eq_int(vals["ratio"].kind, VAL_FLOAT, "decimal number mapped to VAL_FLOAT")
+nox.test.assert_eq_int(vals["name"].kind, VAL_STR, "string mapped to VAL_STR")
+nox.test.assert_eq_str(vals["name"].s, "feather", "string payload matches")
+nox.test.assert_eq_int(vals["active"].kind, VAL_BOOL, "boolean mapped to VAL_BOOL")
+nox.test.assert_true(vals["active"].b, "boolean True matches")
+nox.test.assert_eq_int(vals["deleted_at"].kind, VAL_NULL, "null mapped to VAL_NULL")
+nox.test.assert_eq_str(vals["tags"].s, "[\"orm\",\"sql\"]", "nested array compacted via pos_dump")
+nox.test.assert_eq_str(vals["meta"].s, "{\"v\":4}", "nested object compacted via pos_dump")
+
+# 2. Direct pos_get typed field readers
+nox.test.assert_eq_str(json_pos_get_str(payload, "name"), "feather", "json_pos_get_str reads string")
+nox.test.assert_eq_int(json_pos_get_int(payload, "id"), 9007199254740993, "json_pos_get_int reads 64-bit integer")
+nox.test.assert_true(json_pos_get_bool(payload, "active"), "json_pos_get_bool reads boolean")
+nox.test.assert_true(json_pos_get_float(payload, "ratio") > 3.4, "json_pos_get_float reads float")
+
+missing_caught: bool = False
+try:
+    json_pos_get_str(payload, "does_not_exist")
+except MappingError as e_miss:
+    missing_caught = True
+    nox.test.assert_true(len(e_miss.cause) > 0, "missing key MappingError includes JsonError cause")
+nox.test.assert_true(missing_caught, "missing key raises MappingError")
+
+# 3. Zero-tree extraction directly from SQLite rows
+tbl: Table = table("events", [col_int("id", True), col_str("props")])
+s: Session = open_sqlite_memory()
+s.create_table(tbl)
+s.insert(tbl, {"id": val_int(1), "props": val_str("{\"kind\":\"login\",\"attempts\":2,\"ok\":true}")})
+
+rows: list[Row] = s.query_raw("SELECT id, props FROM events", [])
+nox.test.assert_eq_str(row_json_get_str(rows[0], 1, "kind"), "login", "row_json_get_str works")
+nox.test.assert_eq_int(row_json_get_int(rows[0], 1, "attempts"), 2, "row_json_get_int works")
+nox.test.assert_true(row_json_get_bool(rows[0], 1, "ok"), "row_json_get_bool works")
+s.close()
+
+print("json_pos_mapper_test passed")

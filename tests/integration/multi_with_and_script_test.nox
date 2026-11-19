@@ -1,0 +1,35 @@
+# tests/integration/multi_with_and_script_test.nox — Tests multi-item `with`, `execute_script`, and non-poisoning QueryCanceledError.
+
+import nox.test
+from feather import ConnectionPool, create_sqlite_pool, Session, Transaction, Table, col_int, col_str, table, val_int, val_str, QueryCanceledError, FeatherError
+
+cp: ConnectionPool = create_sqlite_pool(":memory:", 2)
+tbl: Table = table("notes", [col_int("id", True), col_str("body")])
+
+# 1. Multi-item `with` (`with cp.lease() as s, s.transaction() as tx:`) + multi-statement execute_script
+with cp.lease() as s, s.transaction() as tx:
+    n_stmt: int = s.execute_script("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); CREATE INDEX idx_notes_id ON notes(id); INSERT INTO notes (id, body) VALUES (1, 'one'); INSERT INTO notes (id, body) VALUES (2, 'two');")
+    nox.test.assert_true(n_stmt >= 1, "execute_script ran multiple DDL/DML statements sequentially")
+    tx.commit()
+
+nox.test.assert_eq_int(cp.in_use_count(), 0, "multi-item with released PoolLease on exit")
+
+# 2. Multi-item `with` automatic rollback when body raises, without losing lease
+err_caught: bool = False
+try:
+    with cp.lease() as s2, s2.transaction() as tx2:
+        s2.insert(tbl, {"id": val_int(3), "body": val_str("rolled-back")})
+        raise QueryCanceledError("simulated timeout cancel", "57014")
+except QueryCanceledError as qe:
+    err_caught = True
+    nox.test.assert_eq_str(qe.sqlstate, "57014", "QueryCanceledError sqlstate preserved")
+
+nox.test.assert_true(err_caught, "QueryCanceledError propagated from multi-item with")
+nox.test.assert_eq_int(cp.in_use_count(), 0, "PoolLease released after error in multi-item with")
+
+with cp.lease() as s3:
+    nox.test.assert_true(s3.is_ok(), "pool connection stayed healthy after rollback of canceled statement")
+    nox.test.assert_eq_int(s3.count(tbl), 2, "row 3 rolled back leaving 2 committed rows")
+
+cp.close_all()
+print("multi_with_and_script_test passed")

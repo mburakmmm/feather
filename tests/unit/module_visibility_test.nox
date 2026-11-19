@@ -1,0 +1,24 @@
+# tests/unit/module_visibility_test.nox — Verifies __all__ public exports across Feather modules and := inference inside functions.
+
+import nox.test
+from errors import FeatherError, sanitize_error_message, classify_driver_error, UniqueConstraintError
+from types import Decimal, decimal, DateTime, datetime, UUID, uuid_parse, json_parse, json_dump
+from mapper import Model, dataclass_model, row_get_int, json_pos_get_str
+from reflect_schema import reflect_table, reflect_dataclass_model
+from pool import ConnectionPool, PoolConfig, PoolLease, create_sqlite_pool, create_safe_sqlite_pool
+from migrations import Migration, MigrationManager, migration, compute_migration_checksum, safe_migration_path, load_migrations_from_dir
+
+def _verify_visibility() -> None:
+    d := decimal("12.34")
+    nox.test.assert_eq_str(d.to_string(), "12.34", "Decimal exported cleanly with __all__")
+
+    err := classify_driver_error("password=secret123 duplicate", "23505")
+    nox.test.assert_true("password=[REDACTED]" in err.message, "sanitize + classify exported via errors.__all__")
+
+    cp := create_sqlite_pool(":memory:", 2)
+    with cp.lease() as s:
+        nox.test.assert_true(s.is_ok(), "PoolLease + ConnectionPool exported via pool.__all__")
+    cp.close_all()
+
+_verify_visibility()
+print("module_visibility_test passed")

@@ -33,60 +33,62 @@ class Dialect:
         return "?"
 
     def column_base_type_sql(self: Dialect, col: Column) -> str:
-
-        if self.kind == DIALECT_SQLITE:
-            if col.data_type == TYPE_INTEGER:
-                return "INTEGER"
-            if col.data_type == TYPE_REAL:
-                return "REAL"
-            if col.data_type == TYPE_BOOLEAN:
-                return "INTEGER"
-            return "TEXT"
-
-        if self.kind == DIALECT_POSTGRES:
-            if col.data_type == TYPE_INTEGER:
-                return "INTEGER"
-            if col.data_type == TYPE_REAL:
-                return "DOUBLE PRECISION"
-            if col.data_type == TYPE_BOOLEAN:
-                return "BOOLEAN"
-            return "TEXT"
-
-        if self.kind == DIALECT_MYSQL:
-            if col.data_type == TYPE_INTEGER:
-                return "INT"
-            if col.data_type == TYPE_REAL:
-                return "DOUBLE"
-            if col.data_type == TYPE_BOOLEAN:
-                return "TINYINT(1)"
-            return "TEXT"
-
-        raise DialectError("unknown dialect kind: " + str(self.kind))
+        match self.kind:
+            case 1:
+                match col.data_type:
+                    case 1:
+                        return "INTEGER"
+                    case 3:
+                        return "REAL"
+                    case 4:
+                        return "INTEGER"
+                    case _:
+                        return "TEXT"
+            case 2:
+                match col.data_type:
+                    case 1:
+                        return "INTEGER"
+                    case 3:
+                        return "DOUBLE PRECISION"
+                    case 4:
+                        return "BOOLEAN"
+                    case _:
+                        return "TEXT"
+            case 3:
+                match col.data_type:
+                    case 1:
+                        return "INT"
+                    case 3:
+                        return "DOUBLE"
+                    case 4:
+                        return "TINYINT(1)"
+                    case _:
+                        return "TEXT"
+            case _:
+                raise DialectError("unknown dialect kind: " + str(self.kind))
 
     def column_type_sql(self: Dialect, col: Column) -> str:
-
-        if self.kind == DIALECT_SQLITE:
-            if col.data_type == TYPE_INTEGER and col.is_primary_key:
-                if col.is_auto_increment:
-                    return "INTEGER PRIMARY KEY AUTOINCREMENT"
-                return "INTEGER PRIMARY KEY"
-            return self.column_base_type_sql(col)
-
-        if self.kind == DIALECT_POSTGRES:
-            if col.data_type == TYPE_INTEGER and col.is_primary_key:
-                if col.is_auto_increment:
-                    return "SERIAL PRIMARY KEY"
-                return "INTEGER PRIMARY KEY"
-            return self.column_base_type_sql(col)
-
-        if self.kind == DIALECT_MYSQL:
-            if col.data_type == TYPE_INTEGER and col.is_primary_key:
-                if col.is_auto_increment:
-                    return "INT AUTO_INCREMENT PRIMARY KEY"
-                return "INT PRIMARY KEY"
-            return self.column_base_type_sql(col)
-
-        raise DialectError("unknown dialect kind: " + str(self.kind))
+        match self.kind:
+            case 1:
+                if col.data_type == TYPE_INTEGER and col.is_primary_key:
+                    if col.is_auto_increment:
+                        return "INTEGER PRIMARY KEY AUTOINCREMENT"
+                    return "INTEGER PRIMARY KEY"
+                return self.column_base_type_sql(col)
+            case 2:
+                if col.data_type == TYPE_INTEGER and col.is_primary_key:
+                    if col.is_auto_increment:
+                        return "SERIAL PRIMARY KEY"
+                    return "INTEGER PRIMARY KEY"
+                return self.column_base_type_sql(col)
+            case 3:
+                if col.data_type == TYPE_INTEGER and col.is_primary_key:
+                    if col.is_auto_increment:
+                        return "INT AUTO_INCREMENT PRIMARY KEY"
+                    return "INT PRIMARY KEY"
+                return self.column_base_type_sql(col)
+            case _:
+                raise DialectError("unknown dialect kind: " + str(self.kind))
 
     def create_table_sql(self: Dialect, tbl: Table) -> str:
 
@@ -333,10 +335,12 @@ def mysql_dialect() -> Dialect:
     return Dialect(DIALECT_MYSQL, "mysql")
 
 def get_dialect(kind: int) -> Dialect:
-    if kind == DIALECT_SQLITE:
-        return sqlite_dialect()
-    if kind == DIALECT_POSTGRES:
-        return postgres_dialect()
-    if kind == DIALECT_MYSQL:
-        return mysql_dialect()
-    raise DialectError("unsupported dialect kind: " + str(kind))
+    match kind:
+        case 1:
+            return sqlite_dialect()
+        case 2:
+            return postgres_dialect()
+        case 3:
+            return mysql_dialect()
+        case _:
+            raise DialectError("unsupported dialect kind: " + str(kind))

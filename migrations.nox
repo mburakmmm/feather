@@ -22,6 +22,19 @@ from nox.path import PathError
 import dialects
 from dialects import DIALECT_SQLITE, DIALECT_POSTGRES, DIALECT_MYSQL
 
+__all__: list[str] = [
+    "generate_lock_token",
+    "compute_migration_checksum",
+    "compute_legacy_string_checksum",
+    "compute_legacy_migration_checksum",
+    "Migration",
+    "migration",
+    "MigrationManager",
+    "safe_migration_path",
+    "load_migration_file",
+    "load_migrations_from_dir"
+]
+
 def _current_timestamp() -> int:
     t: nox.time.DateTime = nox.time.now()
     days: int = (t.year - 2020) * 365 + (t.month * 31) + t.day
@@ -329,7 +342,7 @@ class MigrationManager:
                 tx.commit()
             except Exception as e:
                 tx.rollback()
-                raise MigrationError("failed to atomically upgrade legacy checksums: " + e.message)
+                raise MigrationError("failed to atomically upgrade legacy checksums: " + e.message) from e
 
     def get_applied_versions(self: MigrationManager) -> list[int]:
 
@@ -733,7 +746,7 @@ class MigrationManager:
                         count = count + 1
                     except Exception as e:
                         tx.rollback()
-                        raise MigrationError("failed applying migration " + str(m.version) + " (" + m.name + "): " + e.message)
+                        raise MigrationError("failed applying migration " + str(m.version) + " (" + m.name + "): " + e.message) from e
                 else:
                     # Non-transactional DDL engine (e.g. MySQL implicit commits)
                     q_table: str = self.session.dialect.quote_identifier("_feather_migrations")
@@ -831,7 +844,7 @@ class MigrationManager:
                                 count = count + 1
                             except Exception as e:
                                 tx.rollback()
-                                raise MigrationError("failed rolling back migration " + str(m.version) + ": " + e.message)
+                                raise MigrationError("failed rolling back migration " + str(m.version) + ": " + e.message) from e
                         else:
                             # Non-transactional DDL (MySQL)
                             try:
@@ -897,7 +910,7 @@ def safe_migration_path(root_dir: str, filename: str) -> str:
     try:
         return nox.path.safe_join(root_dir, clean)
     except PathError as e:
-        raise MigrationError("unsafe migration file path rejected: " + e.message)
+        raise MigrationError("unsafe migration file path rejected: " + e.message) from e
 
 def _split_sql_statements(sql_block: str) -> list[str]:
     out: list[str] = []
@@ -963,7 +976,7 @@ def load_migration_file(dir_path: str, filename: str) -> Migration:
     try:
         content = nox.fs.read_to_string(full_path)
     except FsError as e:
-        raise MigrationError("failed to read migration file '" + filename + "': " + e.message)
+        raise MigrationError("failed to read migration file '" + filename + "': " + e.message) from e
     stmts: tuple[list[str], list[str]] = _parse_migration_sql(content)
     return migration(ver, m_name, stmts[0], stmts[1])
 
@@ -972,7 +985,7 @@ def load_migrations_from_dir(dir_path: str) -> list[Migration]:
     try:
         entries = nox.fs.read_dir(dir_path)
     except FsError as e:
-        raise MigrationError("failed to list migration directory: " + e.message)
+        raise MigrationError("failed to list migration directory: " + e.message) from e
 
     loaded: list[Migration] = []
     i: int = 0

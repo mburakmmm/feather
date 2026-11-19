@@ -168,7 +168,7 @@ class Transaction:
         except Exception as e:
             self.state = TX_STATE_FAILED
             self.session.in_transaction = False
-            raise TransactionError("failed to begin transaction: " + e.message)
+            raise TransactionError("failed to begin transaction: " + e.message) from e
 
     def commit(self: Transaction) -> None:
         if self.state != TX_STATE_ACTIVE:
@@ -183,7 +183,7 @@ class Transaction:
             self.state = TX_STATE_FAILED
             self.session.in_transaction = True
             self.session.is_poisoned = True
-            raise TransactionError("failed to commit transaction: " + e.message)
+            raise TransactionError("failed to commit transaction: " + e.message) from e
 
     def rollback(self: Transaction) -> None:
         if self.state != TX_STATE_ACTIVE and self.state != TX_STATE_FAILED:
@@ -198,7 +198,7 @@ class Transaction:
             self.state = TX_STATE_FAILED
             self.session.in_transaction = True
             self.session.is_poisoned = True
-            raise TransactionError("failed to rollback transaction: " + e.message)
+            raise TransactionError("failed to rollback transaction: " + e.message) from e
 
     def execute(self: Transaction, sql: str, params: list[Value]) -> int:
         return self.session.execute_raw(sql, params)
@@ -294,36 +294,48 @@ class Session:
                     tx.commit()
                 return
             except FeatherError as fe:
+                rb_err: str = ""
                 if tx.state == TX_STATE_ACTIVE or tx.state == TX_STATE_FAILED:
                     try:
                         tx.rollback()
                     except Exception as e_rb:
                         self.is_poisoned = True
+                        rb_err = e_rb.message
                 if (fe.is_retryable() or is_retryable_message(fe.message)) and attempt < retries and not self.is_poisoned:
                     should_retry = True
+                elif rb_err != "":
+                    raise FeatherError(fe.message + " (rollback also failed: " + rb_err + ")", fe.sqlstate, fe.table, fe.column, fe.constraint) from fe
                 else:
-                    raise fe
+                    raise
             except PostgresError as pge:
+                rb_err2: str = ""
                 if tx.state == TX_STATE_ACTIVE or tx.state == TX_STATE_FAILED:
                     try:
                         tx.rollback()
                     except Exception as e_rb2:
                         self.is_poisoned = True
+                        rb_err2 = e_rb2.message
                 mapped: FeatherError = from_postgres_error(pge)
                 if (pge.is_retryable() or mapped.is_retryable()) and attempt < retries and not self.is_poisoned:
                     should_retry = True
+                elif rb_err2 != "":
+                    raise TransactionError(mapped.message + " (rollback also failed: " + rb_err2 + ")", mapped.sqlstate, mapped.table, mapped.column, mapped.constraint) from pge
                 else:
-                    raise mapped
+                    raise mapped from pge
             except Exception as e:
+                rb_err3: str = ""
                 if tx.state == TX_STATE_ACTIVE or tx.state == TX_STATE_FAILED:
                     try:
                         tx.rollback()
                     except Exception as e_rb3:
                         self.is_poisoned = True
+                        rb_err3 = e_rb3.message
                 if is_retryable_message(e.message) and attempt < retries and not self.is_poisoned:
                     should_retry = True
+                elif rb_err3 != "":
+                    raise TransactionError(e.message + " (rollback also failed: " + rb_err3 + ")") from e
                 else:
-                    raise e
+                    raise
             if should_retry:
                 attempt = attempt + 1
                 if backoff_ms > 0:
@@ -359,12 +371,12 @@ class Session:
                 bind_value(stmt, i, params[i])
                 i = i + 1
             affected = stmt.execute()
-        except FeatherError as fe:
-            raise fe
+        except FeatherError:
+            raise
         except PostgresError as pge:
-            raise from_postgres_error(pge)
+            raise from_postgres_error(pge) from pge
         except Exception as e:
-            raise classify_driver_error(e.message)
+            raise classify_driver_error(e.message) from e
 
         first_token: str = ""
         second_token: str = ""
@@ -379,6 +391,18 @@ class Session:
             self.in_transaction = False
         return affected
 
+    def execute_script(self, sql: str) -> int:
+        # Executes multi-statement unparameterized DDL/migration scripts (nox.sqlite 2.1.195+ execute_script / PQexec)
+        self._ensure_open()
+        try:
+            return self.conn.execute(sql)
+        except FeatherError:
+            raise
+        except PostgresError as pge:
+            raise from_postgres_error(pge) from pge
+        except Exception as e:
+            raise classify_driver_error(e.message) from e
+
     def query_raw(self, sql: str, params: list[Value]) -> list[Row]:
         self._ensure_open()
         try:
@@ -388,12 +412,12 @@ class Session:
                 bind_value(stmt, i, params[i])
                 i = i + 1
             return stmt.query()
-        except FeatherError as fe:
-            raise fe
+        except FeatherError:
+            raise
         except PostgresError as pge:
-            raise from_postgres_error(pge)
+            raise from_postgres_error(pge) from pge
         except Exception as e:
-            raise classify_driver_error(e.message)
+            raise classify_driver_error(e.message) from e
 
     def insert(self, tbl: Table, values_dict: dict[str, Value]) -> int:
         self._ensure_open()
@@ -838,4 +862,4 @@ def safe_sqlite_path(root_dir: str, db_path: str) -> str:
     try:
         return nox.path.safe_join(root_dir, clean)
     except PathError as e:
-        raise ConnectionError("unsafe SQLite database path rejected: " + e.message)
+        raise ConnectionError("unsafe SQLite database path rejected: " + e.message) from e

@@ -1,7 +1,7 @@
 # examples/modern_dataclass.nox — Declarative @dataclass + nox.reflect schema, dirty tracking, and SqlValue.
 
 import nox.json
-from feather import Session, Table, Value, SqlValue, open_sqlite_memory, compute_dirty_fields, json_object_to_values, eq, val_str, val_int
+from feather import Session, Table, Value, SqlValue, open_sqlite_memory, compute_dirty_fields, json_object_to_values, json_pos_get_str, eq, val_str, val_int
 from mapper import Model
 from reflect_schema import reflect_dataclass_model
 
@@ -42,6 +42,7 @@ if loaded is not None:
     new_dict: dict[str, Value] = model.encode(edited)
     changed_rows: int = s.save_changes(model.table, {"id": val_int(article_id)}, orig_dict, new_dict)
     print("Dirty columns saved, affected rows:", changed_rows)
+    print("Zero-alloc tape slug:", json_pos_get_str(edited.to_json(), "slug"))
 
 # 4. Inspect SqlValue tagged union
 sv: SqlValue = val_str("published").to_enum()

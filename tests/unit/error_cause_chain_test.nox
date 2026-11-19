@@ -1,0 +1,83 @@
+# tests/unit/error_cause_chain_test.nox — Tests for Exception.cause (`raise ... from`) and scalar `match` error mapping.
+
+import nox.test
+from feather import FeatherError, ConnectionError, MappingError, MigrationError, TransactionError, UniqueConstraintError, ForeignKeyError, NotNullViolationError, CheckConstraintError, DeadlockError, SerializationFailureError, QueryCanceledError, Session, open_sqlite_memory, Transaction, Table, col_int, table, val_int, classify_driver_error, json_parse, json_object_to_values, safe_migration_path, safe_sqlite_path
+
+# 1. raise ... from preserves original driver/json/path error message in e.cause
+caught_json: bool = False
+try:
+    json_parse("{bad_json")
+except MappingError as e1:
+    caught_json = True
+    nox.test.assert_true(len(e1.cause) > 0, "json_parse populates Exception.cause from JsonError")
+    nox.test.assert_true("invalid JSON" in e1.message, "MappingError has contextual message")
+nox.test.assert_true(caught_json, "Malformed JSON raises MappingError")
+
+caught_obj: bool = False
+try:
+    json_object_to_values("5")
+except MappingError as e2:
+    caught_obj = True
+    nox.test.assert_true(len(e2.cause) > 0, "json_object_to_values preserves JsonError in cause")
+nox.test.assert_true(caught_obj, "Scalar JSON raises MappingError")
+
+caught_arr: bool = False
+try:
+    json_object_to_values("[1, 2, 3]")
+except MappingError:
+    caught_arr = True
+nox.test.assert_true(caught_arr, "Array JSON raises MappingError")
+
+caught_mig_path: bool = False
+try:
+    safe_migration_path(".", "../../etc/passwd")
+except MigrationError as e3:
+    caught_mig_path = True
+    nox.test.assert_true(len(e3.cause) > 0, "safe_migration_path preserves PathError in cause")
+nox.test.assert_true(caught_mig_path, "Traversal path raises MigrationError with cause")
+
+caught_sq_path: bool = False
+try:
+    safe_sqlite_path(".", "../outside.db")
+except ConnectionError as e4:
+    caught_sq_path = True
+    nox.test.assert_true(len(e4.cause) > 0, "safe_sqlite_path preserves PathError in cause")
+nox.test.assert_true(caught_sq_path, "Traversal SQLite path raises ConnectionError with cause")
+
+# 2. Database error propagation preserves SqliteError cause
+s: Session = open_sqlite_memory()
+caught_db: bool = False
+try:
+    s.execute_raw("INSERT INTO nonexistent_table (x) VALUES (?)", [val_int(1)])
+except FeatherError as e5:
+    caught_db = True
+    nox.test.assert_true(len(e5.cause) > 0, "execute_raw preserves driver error in e.cause")
+nox.test.assert_true(caught_db, "execute_raw failed cleanly on missing table")
+
+# 3. Transaction begin failure preserves cause
+s.close()
+caught_tx: bool = False
+try:
+    tx: Transaction = Transaction(s)
+    tx.begin()
+except TransactionError as e6:
+    caught_tx = True
+    nox.test.assert_true(len(e6.cause) > 0, "Transaction.begin preserves underlying ConnectionError cause")
+nox.test.assert_true(caught_tx, "Transaction.begin on closed session raises TransactionError")
+
+# 4. Scalar match SQLSTATE 08* connection classification & check violation
+caught_conn_sqlstate: bool = False
+try:
+    raise classify_driver_error("connection failure", "08006")
+except ConnectionError:
+    caught_conn_sqlstate = True
+nox.test.assert_true(caught_conn_sqlstate, "SQLSTATE 08006 maps to ConnectionError via scalar match")
+
+caught_check: bool = False
+try:
+    raise classify_driver_error("check failed", "23514")
+except CheckConstraintError:
+    caught_check = True
+nox.test.assert_true(caught_check, "SQLSTATE 23514 maps to CheckConstraintError via scalar match")
+
+print("error_cause_chain_test passed")

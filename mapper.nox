@@ -13,6 +13,47 @@ from errors import MappingError
 import types
 from types import Decimal, DateTime, UUID, decimal, parse_iso_datetime, uuid_parse, json_parse
 
+__all__: list[str] = [
+    "row_is_null",
+    "row_get_int",
+    "row_get_str",
+    "row_get_float",
+    "row_get_bool",
+    "row_get_opt_int",
+    "row_get_opt_str",
+    "row_get_opt_float",
+    "row_get_opt_bool",
+    "row_get_decimal",
+    "row_get_opt_decimal",
+    "row_get_datetime",
+    "row_get_opt_datetime",
+    "row_get_uuid",
+    "row_get_opt_uuid",
+    "find_column_index",
+    "row_get_int_by_name",
+    "row_get_str_by_name",
+    "row_get_float_by_name",
+    "row_get_bool_by_name",
+    "Model",
+    "row_get_json",
+    "row_get_json_by_name",
+    "row_get_opt_json",
+    "json_to_value",
+    "json_object_to_values",
+    "values_to_json",
+    "row_to_json",
+    "dataclass_model",
+    "json_pos_get_str",
+    "json_pos_get_int",
+    "json_pos_get_float",
+    "json_pos_get_bool",
+    "row_json_get_str",
+    "row_json_get_int",
+    "row_json_get_bool"
+]
+
+type ParamMap = dict[str, Value]
+
 def row_is_null(row: Row, idx: int) -> bool:
     return row.is_null(idx)
 
@@ -180,37 +221,60 @@ def json_to_value(v: JsonValue) -> Value:
             return val_float(nox.json.as_number(v))
     return val_str(nox.json.dump(v))
 
-def json_object_to_values(json_text: str) -> dict[str, Value]:
+def _pos_to_value(root: JsonValue, p: int) -> Value:
+    k: int = nox.json.pos_kind(root, p)
+    match k:
+        case 0:
+            return val_null()
+        case 1:
+            return val_bool(nox.json.pos_bool(root, p))
+        case 2:
+            dumped: str = nox.json.pos_dump(root, p)
+            if "." in dumped or "e" in dumped or "E" in dumped:
+                return val_float(nox.json.pos_number(root, p))
+            try:
+                return val_int(nox.json.pos_int(root, p))
+            except JsonError:
+                return val_float(nox.json.pos_number(root, p))
+        case 3:
+            return val_str(nox.json.pos_str(root, p))
+        case _:
+            return val_str(nox.json.pos_dump(root, p))
+
+def json_object_to_values(json_text: str) -> ParamMap:
     root: JsonValue = json_parse(json_text)
     try:
-        nox.json.expect_object(root, "model JSON payload")
+        p: int = nox.json.pos_root(root)
+        if nox.json.pos_kind(root, p) != 5:
+            raise MappingError("expected JSON object payload")
+        out: ParamMap = {}
+        n: int = nox.json.pos_len(root, p)
+        i: int = 0
+        while i < n:
+            k: str = nox.json.pos_key(root, p, i)
+            val_pos: int = nox.json.pos_at(root, p, i)
+            out[k] = _pos_to_value(root, val_pos)
+            i = i + 1
+        return out
     except JsonError as e:
-        raise MappingError("expected JSON object payload: " + e.message)
-    out: dict[str, Value] = {}
-    n: int = nox.json.object_len(root)
-    i: int = 0
-    while i < n:
-        k: str = nox.json.object_key(root, i)
-        v: JsonValue = nox.json.object_value(root, i)
-        out[k] = json_to_value(v)
-        i = i + 1
-    return out
+        raise MappingError("expected JSON object payload: " + e.message) from e
 
-def values_to_json(vals: dict[str, Value]) -> str:
+def values_to_json(vals: ParamMap) -> str:
     w: JsonWriter = JsonWriter()
     w.begin_object()
     for k, v in vals.items():
         w.write_key(k)
-        if v.kind == VAL_NULL:
-            w.write_null()
-        elif v.kind == VAL_INT:
-            w.write_int(v.i)
-        elif v.kind == VAL_FLOAT:
-            w.write_float(v.f)
-        elif v.kind == VAL_BOOL:
-            w.write_bool(v.b)
-        else:
-            w.write_string(v.s)
+        match v.kind:
+            case 5:
+                w.write_null()
+            case 1:
+                w.write_int(v.i)
+            case 2:
+                w.write_float(v.f)
+            case 4:
+                w.write_bool(v.b)
+            case _:
+                w.write_string(v.s)
     w.end_object()
     return w.build()
 
@@ -227,14 +291,16 @@ def row_to_json(row: Row, tbl: Table) -> str:
                 if not col.is_nullable:
                     raise MappingError("column '" + col.name + "' is NULL, expected non-null")
                 w.write_null()
-            elif col.data_type == TYPE_INTEGER:
-                w.write_int(row_get_int(row, idx))
-            elif col.data_type == TYPE_REAL:
-                w.write_float(row_get_float(row, idx))
-            elif col.data_type == TYPE_BOOLEAN:
-                w.write_bool(row_get_bool(row, idx))
             else:
-                w.write_string(row_get_str(row, idx))
+                match col.data_type:
+                    case 1:
+                        w.write_int(row_get_int(row, idx))
+                    case 3:
+                        w.write_float(row_get_float(row, idx))
+                    case 4:
+                        w.write_bool(row_get_bool(row, idx))
+                    case _:
+                        w.write_string(row_get_str(row, idx))
         i = i + 1
     w.end_object()
     return w.build()
@@ -245,3 +311,48 @@ def dataclass_model[T](tbl: Table, from_json_fn: (str) -> T, to_json_fn: (T) -> 
         lambda r: from_json_fn(row_to_json(r, tbl)),
         lambda obj: json_object_to_values(to_json_fn(obj))
     )
+
+def json_pos_get_str(json_text: str, key: str) -> str:
+    root: JsonValue = json_parse(json_text)
+    try:
+        rpos: int = nox.json.pos_root(root)
+        fpos: int = nox.json.pos_get(root, rpos, key)
+        return nox.json.pos_str(root, fpos)
+    except JsonError as e:
+        raise MappingError("failed reading string JSON key '" + key + "': " + e.message) from e
+
+def json_pos_get_int(json_text: str, key: str) -> int:
+    root: JsonValue = json_parse(json_text)
+    try:
+        rpos: int = nox.json.pos_root(root)
+        fpos: int = nox.json.pos_get(root, rpos, key)
+        return nox.json.pos_int(root, fpos)
+    except JsonError as e:
+        raise MappingError("failed reading int JSON key '" + key + "': " + e.message) from e
+
+def json_pos_get_float(json_text: str, key: str) -> float:
+    root: JsonValue = json_parse(json_text)
+    try:
+        rpos: int = nox.json.pos_root(root)
+        fpos: int = nox.json.pos_get(root, rpos, key)
+        return nox.json.pos_number(root, fpos)
+    except JsonError as e:
+        raise MappingError("failed reading float JSON key '" + key + "': " + e.message) from e
+
+def json_pos_get_bool(json_text: str, key: str) -> bool:
+    root: JsonValue = json_parse(json_text)
+    try:
+        rpos: int = nox.json.pos_root(root)
+        fpos: int = nox.json.pos_get(root, rpos, key)
+        return nox.json.pos_bool(root, fpos)
+    except JsonError as e:
+        raise MappingError("failed reading bool JSON key '" + key + "': " + e.message) from e
+
+def row_json_get_str(row: Row, idx: int, key: str) -> str:
+    return json_pos_get_str(row_get_str(row, idx), key)
+
+def row_json_get_int(row: Row, idx: int, key: str) -> int:
+    return json_pos_get_int(row_get_str(row, idx), key)
+
+def row_json_get_bool(row: Row, idx: int, key: str) -> bool:
+    return json_pos_get_bool(row_get_str(row, idx), key)

@@ -5,6 +5,24 @@ All notable changes to **Feather** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-19
+
+### Added
+- **Zero-Allocation `nox.json.pos_*` JSON Mapping (`mapper.nox`, `feather.nox`):**
+  - Rewrote `json_object_to_values` using `nox.json.pos_*` (`pos_root`, `pos_kind`, `pos_len`, `pos_key`, `pos_at`, `pos_int`, `pos_number`, `pos_bool`, `pos_str`, `pos_dump`) to avoid intermediate child `JsonValue` AST node allocations.
+  - Added direct zero-tree extractors: `json_pos_get_str`, `json_pos_get_int`, `json_pos_get_float`, `json_pos_get_bool`, `row_json_get_str`, `row_json_get_int`, `row_json_get_bool`.
+- **Exception Cause Chaining (`raise ... from e` & bare `raise`):**
+  - Updated `types.nox`, `mapper.nox`, `migrations.nox`, and `session.nox` (`Transaction`, `Session.execute_raw`, `Session.query_raw`, `Session.run_in_tx`, `safe_sqlite_path`) to preserve `Exception.cause` across wrapped driver, JSON, path, and filesystem failures without masking rollback errors.
+- **Multi-Statement Script Execution (`session.nox`):**
+  - Added `Session.execute_script(sql: str) -> int` leveraging `nox.sqlite` `2.1.195+` sequential statement execution (`execute_script`) for unparameterized DDL/migration blocks.
+- **Module Visibility (`__all__`) & Nox 2.2.38 Idioms:**
+  - Added opt-in `__all__` exports to `errors.nox`, `types.nox`, `mapper.nox`, `reflect_schema.nox`, `pool.nox`, and `migrations.nox`.
+  - Refactored `errors.nox`, `dialects.nox`, `value.nox`, `mapper.nox`, and `reflect_schema.nox` dispatch tables to scalar `match` (`noxc 2.2.37+`).
+  - Formatted `feather.nox` facade imports using multi-line parenthesized `from ... import (...)` syntax (`noxc 2.1.195+`).
+- **Tests, Examples & CI:**
+  - Added 5 new test suites (`error_cause_chain_test`, `json_pos_mapper_test`, `module_visibility_test`, `compiler_regression_2_2_test`, `multi_with_and_script_test`) verifying compound `with cp.lease() as s, s.transaction() as tx:`, spread syntax (`{**a, **b}`, `[*a, *b]`), `type` aliases, local `:=`, attribute Optional narrowing, and inline `model.encode(...)` on `noxc 2.2.38`.
+  - Updated CI/Release workflow fallback compiler pins to `v2.2.38` and bumped `nox.json` to `0.4.0`.
+
 ## [0.3.0] - 2026-11-15
 
 ### Added

@@ -22,20 +22,19 @@ task_model: Model[TaskItem] = Model[TaskItem](
 
 cp: ConnectionPool = create_sqlite_pool(":memory:", 4)
 
-# Acquire session & run transaction using `with` blocks
+# Acquire session & transaction in a compound `with` block (Nox 2.2.21+)
+with cp.lease() as s, s.transaction() as tx:
+    s.execute_script("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, title TEXT NOT NULL);")
+    i: int = 1
+    while i <= 10:
+        st: str = "open"
+        if i % 2 == 0:
+            st = "done"
+        s.insert(tasks_tbl, {"status": val_str(st), "title": val_str("Task #" + str(i))})
+        i = i + 1
+    tx.commit()
+
 with cp.lease() as s:
-    s.create_table(tasks_tbl)
-
-    with s.transaction() as tx:
-        i: int = 1
-        while i <= 10:
-            st: str = "open"
-            if i % 2 == 0:
-                st = "done"
-            s.insert(tasks_tbl, {"status": val_str(st), "title": val_str("Task #" + str(i))})
-            i = i + 1
-        tx.commit()
-
     # Variadic query builder with IN + paginate
     q: SelectQuery = select_cols("tasks", "id", "status", "title").where(in_vals("status", val_str("open"), val_str("done"))).order_by("id", ORDER_ASC)
     page1: list[TaskItem] = s.execute_query[TaskItem](task_model, q.clone().paginate(1, per_page=3))

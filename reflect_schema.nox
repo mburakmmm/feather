@@ -9,6 +9,11 @@ from mapper import Model, dataclass_model
 import errors
 from errors import MappingError
 
+__all__: list[str] = [
+    "reflect_table",
+    "reflect_dataclass_model"
+]
+
 def _contains_str(items: list[str], target: str) -> bool:
     i: int = 0
     while i < len(items):
@@ -93,19 +98,22 @@ def _map_nox_type(raw_type: str) -> tuple[int, bool]:
         t = nox.strings.trim(t[0:len(t) - 1])
         is_null = True
 
-    if t == "int":
-        return (TYPE_INTEGER, is_null)
-    if t == "str":
-        return (TYPE_TEXT, is_null)
-    if t == "float":
-        return (TYPE_REAL, is_null)
-    if t == "bool":
-        return (TYPE_BOOLEAN, is_null)
-    if (t == "Decimal" or t == "DateTime" or t == "UUID" or t == "JsonValue"
-            or nox.strings.ends_with(t, "_Decimal") or nox.strings.ends_with(t, ".Decimal")
-            or nox.strings.ends_with(t, "_DateTime") or nox.strings.ends_with(t, ".DateTime")
-            or nox.strings.ends_with(t, "_UUID") or nox.strings.ends_with(t, ".UUID")):
-        return (TYPE_TEXT, is_null)
+    match t:
+        case "int":
+            return (TYPE_INTEGER, is_null)
+        case "str":
+            return (TYPE_TEXT, is_null)
+        case "float":
+            return (TYPE_REAL, is_null)
+        case "bool":
+            return (TYPE_BOOLEAN, is_null)
+        case "Decimal" | "DateTime" | "UUID" | "JsonValue":
+            return (TYPE_TEXT, is_null)
+        case _:
+            if (nox.strings.ends_with(t, "_Decimal") or nox.strings.ends_with(t, ".Decimal")
+                    or nox.strings.ends_with(t, "_DateTime") or nox.strings.ends_with(t, ".DateTime")
+                    or nox.strings.ends_with(t, "_UUID") or nox.strings.ends_with(t, ".UUID")):
+                return (TYPE_TEXT, is_null)
 
     raise MappingError("unsupported field type '" + raw_type + "' for reflected SQL mapping")
 
@@ -131,17 +139,20 @@ def reflect_table(class_name: str, *, table_name: str = "") -> Table:
         dtarget: str = nox.reflect.decorator_target_name(di)
         if dkind == 1 and (dtarget == class_name or dtarget == resolved_cname):
             dname: str = nox.reflect.decorator_name(di)
-            if dname == "table":
-                if nox.reflect.decorator_arg_count(di) >= 1 and nox.reflect.decorator_arg_kind(di, 0) == 0:
-                    decorator_table_name = nox.strings.trim(nox.reflect.decorator_arg(di, 0))
-            elif dname == "primary_key":
-                _collect_decorator_strings(di, pk_fields)
-            elif dname == "auto_increment":
-                _collect_decorator_strings(di, auto_fields)
-            elif dname == "nullable":
-                _collect_decorator_strings(di, nullable_fields)
-            elif dname == "unique":
-                _collect_decorator_strings(di, unique_fields)
+            match dname:
+                case "table":
+                    if nox.reflect.decorator_arg_count(di) >= 1 and nox.reflect.decorator_arg_kind(di, 0) == 0:
+                        decorator_table_name = nox.strings.trim(nox.reflect.decorator_arg(di, 0))
+                case "primary_key":
+                    _collect_decorator_strings(di, pk_fields)
+                case "auto_increment":
+                    _collect_decorator_strings(di, auto_fields)
+                case "nullable":
+                    _collect_decorator_strings(di, nullable_fields)
+                case "unique":
+                    _collect_decorator_strings(di, unique_fields)
+                case _:
+                    pass
         di = di + 1
 
     final_table_name: str = nox.strings.trim(table_name)

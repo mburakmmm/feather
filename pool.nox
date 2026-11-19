@@ -9,6 +9,15 @@ from errors import PoolError
 import nox.sqlite
 import nox.strings
 
+__all__: list[str] = [
+    "PoolConfig",
+    "ConnectionPool",
+    "create_pool",
+    "create_sqlite_pool",
+    "create_safe_sqlite_pool",
+    "PoolLease"
+]
+
 class _PoolIdGenerator:
     current: int
 

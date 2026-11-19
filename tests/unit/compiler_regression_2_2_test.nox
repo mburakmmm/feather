@@ -1,0 +1,61 @@
+# tests/unit/compiler_regression_2_2_test.nox — Verifies Nox 2.2.38 features: inline generic return, attr Optional narrowing, spread, type aliases.
+
+import nox.test
+import nox.json
+from feather import Session, open_sqlite_memory, Table, Value, col_int, col_str, table, val_int, val_str, row_to_json, json_object_to_values
+from mapper import Model
+
+type RowValues = dict[str, Value]
+type IdList = list[int]
+
+@dataclass
+@derive("copy", "json")
+class Widget:
+    id: int
+    name: str
+
+class Holder:
+    table_ref: Table | None
+    def __init__(self, t: Table | None) -> None:
+        self.table_ref = t
+
+def _verify_2_2() -> None:
+    # 1. Attribute-path Optional narrowing (Nox 2.2.37 D1.6)
+    t_meta := table("widgets", [col_int("id", True), col_str("name")])
+    h := Holder(t_meta)
+    narrowed_name: str = ""
+    if h.table_ref is not None:
+        narrowed_name = h.table_ref.name
+    nox.test.assert_eq_str(narrowed_name, "widgets", "attribute-path Optional narrowing works on h.table_ref")
+
+    # 2. Dict spread & list spread (Nox 2.2.22)
+    base_vals: RowValues = {"id": val_int(1), "name": val_str("old")}
+    override_vals: RowValues = {"name": val_str("new")}
+    merged: RowValues = {**base_vals, **override_vals}
+    nox.test.assert_eq_str(merged["name"].s, "new", "dict spread overrides base field")
+    nox.test.assert_eq_int(merged["id"].i, 1, "dict spread keeps non-overridden field")
+
+    ids_a: IdList = [1, 2]
+    ids_b: IdList = [3, 4]
+    ids_all: IdList = [*ids_a, *ids_b]
+    nox.test.assert_eq_int(len(ids_all), 4, "list spread combines IdList aliases")
+
+    # 3. Inline generic model.encode(...) passed directly without temporary binding (was SIGSEGV in 2.1.186!)
+    m: Model[Widget] = Model[Widget](
+        t_meta,
+        lambda r: Widget.from_json(row_to_json(r, t_meta)),
+        lambda w: json_object_to_values(w.to_json())
+    )
+    s: Session = open_sqlite_memory()
+    s.create_table(t_meta)
+    w1 := Widget(42, "inline-arc-ok")
+    s.insert(t_meta, m.encode(w1))
+    fetched := s.find_by_id[Widget](m, val_int(42))
+    nox.test.assert_true(fetched is not None, "inline model.encode(...) succeeded on noxc 2.2.38")
+    if fetched is not None:
+        nox.test.assert_eq_str(fetched.name, "inline-arc-ok", "decoded inline-inserted Widget")
+    s.close()
+
+_verify_2_2()
+
+print("compiler_regression_2_2_test passed")
